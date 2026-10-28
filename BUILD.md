@@ -58,7 +58,7 @@ dist/build-1.0.4.json
 
 Android 覆盖升级必须使用同一个签名。请安全备份 `build/android-signing/release.jks` 和 `signing.json`，迁移构建机时恢复它们；不要上传到 Git 或 Releases。一键脚本沿用已有签名，不会每次生成新签名。
 
-在 [本项目 Releases](https://github.com/xiaofan6ya/workbuddy2api/releases) 创建正式版本，Tag 用 `1.0.4` 或 `v1.0.4`，上传上述 **两个安装包和两个 `.sha256` 文件**，保留生成的文件名。不要发布成 Draft/Prerelease，否则稳定版更新检查会忽略它。GitHub 提供有效 SHA256 digest 时也支持直接校验，但建议同时上传校验文件。
+在 [本项目 Releases](https://github.com/xiaofan6ya/wb2api/releases) 创建正式版本，Tag 用 `1.0.4` 或 `v1.0.4`，上传上述 **两个安装包和两个 `.sha256` 文件**，保留生成的文件名。不要发布成 Draft/Prerelease，否则稳定版更新检查会忽略它。GitHub 提供有效 SHA256 digest 时也支持直接校验，但建议同时上传校验文件。
 
 桌面只匹配 `windows-x64.exe`，安卓只匹配 `android-arm64.apk`；缺少本平台包的版本仍可查看公告，但不会提示可升级。各平台独立缓存，按版本号选取最高的可用正式版本。每次启动自动检查，点击左下角版本号可再次检查和查看历史公告；更新由用户决定。安卓下载 APK 后按系统安装流程覆盖升级。
 

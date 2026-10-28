@@ -36,7 +36,10 @@ class UpdateService:
         if self.platform not in ("windows", "android"):
             raise ValueError("Unsupported update platform")
         suffix = "android-arm64.apk" if self.platform == "android" else "windows-x64.exe"
-        self.asset_pattern = "WorkBuddy2API-{version}-" + suffix
+        # 安装包名前缀跟随 version.json 的 asset 模板（上游改名后由 WorkBuddy2API- 变为 wb2api-），
+        # 避免在代码里二次硬编码导致改名后匹配不到任何资产。
+        prefix = METADATA["asset"].split("{version}", 1)[0]
+        self.asset_pattern = prefix + "{version}-" + suffix
         self.cache = base / f"releases-cache-{self.platform}.json"
         self.lock = threading.Lock()
         self.releases = []

@@ -1,5 +1,5 @@
 {
   "version": "1.13.0",
-  "repository": "xiaofan6ya/workbuddy2api",
-  "asset": "WorkBuddy2API-{version}-windows-x64.exe"
+  "repository": "xiaofan6ya/wb2api",
+  "asset": "wb2api-{version}-windows-x64.exe"
 }

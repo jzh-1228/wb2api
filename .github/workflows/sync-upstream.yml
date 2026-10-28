@@ -1,5 +1,13 @@
-# 每天自动把本仓库 master 与上游 xiaofan6ya/workbuddy2api 同步（fast-forward）。
-# 跑在 GitHub Actions 上，不依赖本机开机；如遇冲突会失败并留痕（本仓库无自有提交，正常情况必然快进成功）。
+# 每天自动把上游 xiaofan6ya/wb2api 的 master 内容同步进本仓库。
+#
+# 为什么不是 merge / merge-upstream 接口：
+#   * 本仓库不是真 fork，/merge-upstream 接口直接 422（2026-10 起每天定时失败的原因）；
+#   * 上游改名为 wb2api 时重写了历史，与本仓库没有共同祖先，git merge 会拒绝。
+# 因此采用「内容快照」：工作区重置为上游树、保留本仓库自有文件（.github/workflows/ 全目录），
+# 作为一个普通提交推进 master——push 永远是快进，不存在冲突。
+# 工作流目录必须保留本仓库版本：GITHUB_TOKEN 没有 workflow 权限，改动 .github/workflows
+# 的提交会被 GitHub 拒收；且 CI 配置本就属于本仓库自有内容。
+# 跑在 GitHub Actions 上，不依赖本机开机；内容一致时无提交、无推送。
 name: 同步上游
 
 on:
@@ -14,8 +22,26 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: 同步上游 master
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: 同步上游 master（内容快照）
         run: |
-          gh api repos/jzh-1228/wb2api/merge-upstream -f branch=master
+          git remote add upstream https://github.com/xiaofan6ya/wb2api.git
+          git fetch upstream master
+          cp -R .github/workflows /tmp/wb-workflows
+          git rm -rq .
+          git checkout upstream/master -- .
+          rm -rf .github/workflows
+          mkdir -p .github
+          cp -R /tmp/wb-workflows .github/workflows
+          git add -A
+          if git diff --cached --quiet; then
+            echo "内容与上游一致，无需同步"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "sync: 上游 master 内容快照（$(git rev-parse --short upstream/master)）"
+            git push origin master
+          fi

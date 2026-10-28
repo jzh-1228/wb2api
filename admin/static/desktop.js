@@ -26,9 +26,12 @@ window.WBDesktop = (() => {
     const el = element('button', text, primary ? 'primary' : '');
     el.type = 'button'; el.addEventListener('click', action); return el;
   };
+  // 白名单前缀优先取后端返回的 releases_url（跟随 version.json，改名后自动生效），常量仅为未取到数据时的兜底。
+  const RELEASES_PREFIX_FALLBACK = 'https://github.com/xiaofan6ya/wb2api/releases';
   const link = (text, url) => {
     const el = element('a', text);
-    if (/^https:\/\/github\.com\/xiaofan6ya\/workbuddy2api\/releases(?:\/|$)/.test(url)) {
+    const prefix = (typeof releases?.releases_url === 'string' && releases.releases_url) || RELEASES_PREFIX_FALLBACK;
+    if (url === prefix || url.startsWith(prefix + '/')) {
       el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer';
     }
     return el;
@@ -71,7 +74,7 @@ window.WBDesktop = (() => {
     dialog.append(header, element('p', `当前版本 v${releases?.version || '…'} · 更新由你决定`, 'wb-update-meta'));
     if (releases?.error) dialog.append(element('p', releases.error, 'wb-update-meta'));
     const actions = element('div', undefined, 'wb-update-actions');
-    actions.append(button('重新检查', () => check()), link('打开 Releases', 'https://github.com/xiaofan6ya/workbuddy2api/releases'));
+    actions.append(button('重新检查', () => check()), link('打开 Releases', RELEASES_PREFIX_FALLBACK));
     const latest = releases?.latest;
     if (!native && latest?.asset) {
       actions.append(link(startupPrompt ? '立即更新' : window.WBMobile ? '下载最新版 APK' : '下载最新版 EXE', latest.asset.browser_download_url));

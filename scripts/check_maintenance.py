@@ -175,7 +175,7 @@ class Checks(unittest.TestCase):
 
     def test_update_release_without_client_assets(self):
         self.assertEqual(self.client.get("/api/maintenance/update").status_code,401)
-        fake=Mock();fake.check.return_value={"releases":[{"tag":"v9.0.0","name":"next","url":"https://github.com/xiaofan6ya/workbuddy2api/releases/tag/v9.0.0"},{"tag":"invalid"},{"tag":"v99.0.0rc1"}],"error":""}
+        fake=Mock();fake.check.return_value={"releases":[{"tag":"v9.0.0","name":"next","url":"https://github.com/xiaofan6ya/wb2api/releases/tag/v9.0.0"},{"tag":"invalid"},{"tag":"v99.0.0rc1"}],"error":""}
         with patch.object(maintenance,"service",return_value=fake):
             data=self.client.get("/api/maintenance/update",headers=self.headers).json()
         self.assertEqual(data["latest"]["tag"],"v9.0.0")

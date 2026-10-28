@@ -165,7 +165,7 @@ workbuddy2api/
 
 ## Windows 与 Android
 
-从 [GitHub Releases](https://github.com/xiaofan6ya/workbuddy2api/releases) 下载对应平台安装包及 SHA256 校验文件。
+从 [GitHub Releases](https://github.com/xiaofan6ya/wb2api/releases) 下载对应平台安装包及 SHA256 校验文件。
 
 | 平台 | 使用方式 | 详细说明 |
 | --- | --- | --- |
@@ -185,7 +185,7 @@ Android 后台稳定运行需要允许通知、后台运行及取消电池优化
 安装 Docker Engine 和 Compose 插件后执行：
 
 ```bash
-git clone https://github.com/xiaofan6ya/workbuddy2api.git
+git clone https://github.com/xiaofan6ya/wb2api.git
 cd workbuddy2api
 umask 077
 printf 'ADMIN_USERNAME=admin\nADMIN_PASSWORD=%s\nADMIN_JWT_SECRET=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env.docker
@@ -242,7 +242,7 @@ JDK、Android SDK 和 Gradle 只在构建 APK 时需要，版本和安装路径�
 先克隆仓库并进入项目目录，再创建虚拟环境：
 
 ```bash
-git clone https://github.com/xiaofan6ya/workbuddy2api.git
+git clone https://github.com/xiaofan6ya/wb2api.git
 cd workbuddy2api
 python -m venv .venv
 # Linux/macOS

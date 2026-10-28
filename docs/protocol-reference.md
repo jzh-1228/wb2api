@@ -83,7 +83,7 @@ DeepSeek 手动入口仅在本期未截止、`active=true`、`claimed=false` 且
 
 把 **WorkBuddy / CodeBuddy（腾讯代码助手）** 的桌面端登录态，转成你本机 / 局域网可直接使用的 **OpenAI / Anthropic 兼容 API**，并提供一个 **多账号代理共享 + 自动化运营平台**。
 
-**Windows 桌面版**：下载 [Releases](https://github.com/xiaofan6ya/workbuddy2api/releases) 中的 EXE，双击直接进入，无需配置 Python、MySQL 或后台登录。内置项目依赖，自动准备 Node/WebView2，支持检查更新与选择升级。构建、数据目录与发布说明见 [desktop/README.md](../desktop/README.md)。
+**Windows 桌面版**：下载 [Releases](https://github.com/xiaofan6ya/wb2api/releases) 中的 EXE，双击直接进入，无需配置 Python、MySQL 或后台登录。内置项目依赖，自动准备 Node/WebView2，支持检查更新与选择升级。构建、数据目录与发布说明见 [desktop/README.md](../desktop/README.md)。
 
 **Android 本地版**：在 ARM64 手机上独立运行 Python 后端与 SQLite，通过手机号登录或浏览器 `/join` 授权添加账号。同机 API 地址默认 `http://127.0.0.1:8790/v1`，不包含扫描本机、完整客户端参数编辑页面或拆包工具，设置页可导入并启用电脑导出的客户端参数。构建与后台运行说明见 [android/README.md](../android/README.md)。
 
@@ -150,7 +150,7 @@ Windows 下载新版 EXE，或通过客户端更新入口升级；安卓下载 A
 安装 Docker Engine 与 Compose 插件后，在 Linux 执行：
 
 ```bash
-git clone https://github.com/xiaofan6ya/workbuddy2api.git
+git clone https://github.com/xiaofan6ya/wb2api.git
 cd workbuddy2api
 umask 077
 printf 'ADMIN_USERNAME=admin\nADMIN_PASSWORD=%s\nADMIN_JWT_SECRET=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env.docker
