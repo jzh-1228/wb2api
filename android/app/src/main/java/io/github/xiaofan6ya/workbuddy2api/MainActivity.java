@@ -159,7 +159,7 @@ public class MainActivity extends Activity {
 
     private String startupDetails() {
         android.content.pm.PackageInfo info = Build.VERSION.SDK_INT >= 26 ? WebView.getCurrentWebViewPackage() : null;
-        return "WorkBuddy2API 启动诊断\n时间：" + new java.util.Date() + "\n版本：" + BuildConfig.VERSION_NAME + "\n阶段：" + LocalApiService.startupStage + "\n" +
+        return "wb2api 启动诊断\n时间：" + new java.util.Date() + "\n版本：" + BuildConfig.VERSION_NAME + "\n阶段：" + LocalApiService.startupStage + "\n" +
             "服务启动：" + (LocalApiService.starting ? "进行中" : LocalApiService.origin == null ? "未就绪" : "已就绪") + "\n页面初始化：" + (workbenchReady ? "已完成" : "未完成") + "\n" +
             "服务等待：" + (LocalApiService.startedAt == 0 ? 0 : Math.max(0, SystemClock.elapsedRealtime() - LocalApiService.startedAt) / 1000) + " 秒\n" +
             "系统：Android " + Build.VERSION.RELEASE + "\nWebView：" + (info == null ? "系统内置" : info.packageName + " " + info.versionName) + "\n" +
@@ -182,7 +182,7 @@ public class MainActivity extends Activity {
             }).setNeutralButton("导出文件", (dialog, which) -> {
                 startupExport = report.getBytes(StandardCharsets.UTF_8);
                 try { startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                    .setType("text/plain").putExtra(Intent.EXTRA_TITLE, "workbuddy-startup-diagnostic.txt"), 13); }
+                    .setType("text/plain").putExtra(Intent.EXTRA_TITLE, "wb2api-startup-diagnostic.txt"), 13); }
                 catch (Exception e) { startupExport = null; Toast.makeText(this, "无法打开文件保存器，请复制诊断", Toast.LENGTH_LONG).show(); }
             }).setNegativeButton("关闭", null).show();
     }
@@ -238,7 +238,7 @@ public class MainActivity extends Activity {
         tag.setGravity(Gravity.CENTER);
         tag.setPadding(0, dp(20), 0, 0); card.addView(tag);
         TextView brand = new TextView(this);
-        brand.setText("WorkBuddy2API"); brand.setTextSize(24); brand.setTypeface(null, Typeface.BOLD);
+        brand.setText("wb2api"); brand.setTextSize(24); brand.setTypeface(null, Typeface.BOLD);
         brand.setTextColor(Color.rgb(22, 24, 29)); brand.setGravity(Gravity.CENTER);
         brand.setPadding(0, dp(6), 0, dp(26)); card.addView(brand);
         bootTitle = new TextView(this);
@@ -377,7 +377,7 @@ public class MainActivity extends Activity {
             if (!bridgeTrusted || destroyed || request == null || !request.matches("[0-9]{1,10}") || exportRequest != null || exportWriting || text == null) return false;
             byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
             if (bytes.length > 32 * 1024 * 1024) return false;
-            String safe = filename == null ? "workbuddy-export.info" : filename.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
+            String safe = filename == null ? "wb2api-export.info" : filename.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
             if (safe.length() > 120) safe = safe.substring(0, 120);
             if (!safe.endsWith(".info") && !safe.endsWith(".json") && !safe.endsWith(".jsonl") && !safe.endsWith(".csv") && !safe.endsWith(".txt")) safe += ".info";
             exportRequest = request;

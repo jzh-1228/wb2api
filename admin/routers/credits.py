@@ -21,7 +21,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from admin import routing_policy
 from typing import Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -257,6 +258,7 @@ def credit_expiry_stats(
         "accounts": rows,
         "selection_mode": 'manual' if any(a.selection_priority is not None for a in selection_accounts) else 'automatic',
         "selection_order": [a.id for a in selection_accounts],
+        "routing_policy": routing_policy.selection_policy(db),
         # 分页的逐包列表；packages_total 在 summary 里
         "packages": page,
         "packages_total": len(flat),
@@ -264,6 +266,30 @@ def credit_expiry_stats(
         "package_limit": package_limit,
         "has_more": package_offset + len(page) < len(flat),
     }
+
+
+class SelectionPolicyIn(BaseModel):
+    mode: str
+    upstream_start_interval_ms: int = Field(ge=0, le=60000, strict=True)
+
+
+@router.get('/selection-policy')
+def get_selection_policy(_: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    return routing_policy.selection_policy(db)
+
+
+@router.put('/selection-policy')
+def save_selection_policy(body: SelectionPolicyIn, _: bool = Depends(require_admin),
+                          db: Session = Depends(get_db)):
+    if body.mode not in routing_policy.MODE_IDS:
+        raise HTTPException(400, '未知的账号调度模式')
+    accounts = db.query(Account).with_for_update().all()
+    for account in accounts:
+        account.selection_priority = None
+    routing_policy.save_value(db, routing_policy.SELECTION_KEY, body.mode)
+    routing_policy.save_value(db, routing_policy.INTERVAL_KEY, body.upstream_start_interval_ms)
+    db.commit()
+    return routing_policy.selection_policy(db)
 
 
 class SelectionOrderIn(BaseModel):

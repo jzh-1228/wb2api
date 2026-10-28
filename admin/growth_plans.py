@@ -40,7 +40,7 @@ r"""成长任务的「难度分级 + 完成策略」。
 """
 from dataclasses import dataclass, field
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 # 难度等级
 AUTO = "auto"        # 可直接自动完成
@@ -286,30 +286,73 @@ PATTERN_DENY = {
 }
 
 
+def _expert_jump(raw_url: str):
+    """解析任务跳转里的专家 deeplink。
+
+    两种形态都要认：
+      * 原生 ``workbuddy://expert`` / ``workbuddy://experts?expertId=ex_...``
+      * 网页启动页 ``https://www.workbuddy.cn/work/launch/?deeplink=<urlencoded>``
+        —— 上游把真正的 deeplink 塞在 query 里，只看外层 scheme 会漏掉
+        整个 expert_use_* 任务族（2026-10-24 实测踩坑）。
+    返回解析后的 urlsplit；不是专家跳转返回 None。
+    """
+    try:
+        jump = urlsplit(raw_url)
+    except ValueError:
+        return None
+    if jump.scheme == "workbuddy" and jump.netloc in ("expert", "experts"):
+        return jump
+    if jump.scheme in ("http", "https"):
+        dl = (parse_qs(jump.query).get("deeplink") or [""])[0]
+        try:
+            inner = urlsplit(dl)
+        except ValueError:
+            return None
+        if inner.scheme == "workbuddy" and inner.netloc in ("expert", "experts"):
+            return inner
+    return None
+
+
+#: 标题/描述里可能被引号包住的通用词，不是专家名，提取时排除。
+_QUOTE_STOPWORDS = {"专家", "模板", "新建任务", "专家页"}
+
+
 def _named_expert_plan(task_code: str, task: dict) -> TaskPlan | None:
     """识别指定专家体验活动，不依赖活动码或专家名称白名单。
 
-    只处理专家入口中明确要求召唤并对话、且给出唯一专家名称的任务。
+    判定依据：跳转到专家页（原生或 launch 页内嵌 deeplink）+ 文案明确
+    要求召唤并对话 + 标题与描述里被同一对引号包住的唯一名字。
     描述不明确或带支付/授权等额外条件时交给人工，不能随机选专家。
+
+    deeplink 里带的 ``expertId`` 是上游自己指定的活动专家 id，
+    属官方元数据而非自造 —— 一并传给触发器优先使用（2026-10-24：
+    活动专家实测不在市场列表里，仅按名称搜会 0 个或多个匹配）。
     """
-    text = "\n".join(str(task.get(k) or "") for k in
-                     ("title", "description", "task_desc"))
-    try:
-        jump = urlsplit(str(task.get("jump_url") or ""))
-    except ValueError:
+    title = str(task.get("title") or "")
+    desc = "\n".join(str(task.get(k) or "") for k in ("description", "task_desc"))
+    jump = _expert_jump(str(task.get("jump_url") or ""))
+    if jump is None:
         return None
-    if (jump.scheme != "workbuddy" or jump.netloc not in ("expert", "experts")
-            or not re.search(r"召唤|使用", text) or "对话" not in text):
+    text = title + "\n" + desc
+    if not re.search(r"召唤|使用|体验", text) or "对话" not in text:
         return None
     if re.search(r"付费|支付|购买|捐款|充值|授权|订阅|邀请|分享|关注", text):
         return None
-    names = {name.strip() for name in re.findall(r'[「“\"]([^」”\"\n]{2,100})[」”\"]', text)
-             if name.strip().endswith("专家") and name.strip() != "专家"}
+    quoted = lambda s: {x.strip() for x in
+                        re.findall(r'[「“\"]([^」”\"\n]{2,100})[」”\"]', s)}
+    names = (quoted(title) & quoted(desc)) - _QUOTE_STOPWORDS
+    if not names:
+        names = {x.strip() for x in quoted(title + "\n" + desc)
+                 if x.strip().endswith("专家") and x.strip() != "专家"}
     if len(names) != 1:
         return None
     name = names.pop()
+    kwargs = {"keyword": name}
+    expert_id = (parse_qs(jump.query).get("expertId") or [None])[0]
+    if expert_id:
+        kwargs["expert_id"] = expert_id
     return TaskPlan(task_code, AUTO, reason=f"指定专家体验：按名称查找真实专家「{name}」并上报，以上游进度确认完成",
-                    firer="fire_expert_use", firer_kwargs={"keyword": name})
+                    firer="fire_expert_use", firer_kwargs=kwargs)
 
 
 def plan_for(task_code: str, task: dict | None = None) -> TaskPlan:

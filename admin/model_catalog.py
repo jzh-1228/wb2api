@@ -3,6 +3,7 @@ from collections import OrderedDict
 import hashlib
 import threading
 import time
+from model_metadata import is_image_model
 
 _cache = OrderedDict()
 _lock = threading.Lock()
@@ -31,7 +32,8 @@ def get_models(auth_json, backend_url, fetch):
 
 def auto_model(auth_json, backend_url, fetch):
     rows = get_models(auth_json, backend_url, fetch)
-    models = [row for row in rows if row.get('id') and row['id'].lower() != 'auto']
+    models = [row for row in rows if row.get('id') and row['id'].lower() != 'auto'
+              and not is_image_model(row['id'])]
     if not models:
         return None
     free = [row for row in models if not row.get('credits') or

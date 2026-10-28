@@ -23,7 +23,7 @@ from admin.config import settings
 from admin.db import get_db
 from admin.models import Account, ModelConfig
 from admin.security import require_admin
-from model_metadata import metadata, credit_number
+from model_metadata import metadata, credit_number, model_type, type_tags, is_image_model
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 _sync_lock = threading.Lock()
@@ -75,7 +75,7 @@ def _get_free_models(db: Session) -> set[str]:
         ModelConfig.enabled == 1,
         (ModelConfig.credit_multiplier == 0) | (ModelConfig.credit_multiplier.is_(None))
     ).all()
-    return {m.model_id for m in rows}
+    return {m.model_id for m in rows if not is_image_model(m.model_id)}
 
 
 def _is_model_allowed(db: Session, model_id: str) -> bool:
@@ -108,9 +108,12 @@ def list_configs(
                 "note": m.note,
                 "description": m.description or "",
                 "metadata": _stored_metadata(m),
+                "model_type": model_type({"model_id": m.model_id, "metadata": _stored_metadata(m)}),
+                "tags": type_tags({"model_id": m.model_id, "metadata": _stored_metadata(m)}),
+                "billing_mode": "upstream_usage" if is_image_model(m.model_id) else "token_multiplier",
                 "credit_multiplier": m.credit_multiplier or 0,
                 "credits_raw": m.credits_raw or "",
-                "is_free": (m.credit_multiplier or 0) == 0,
+                "is_free": not is_image_model(m.model_id) and (m.credit_multiplier or 0) == 0,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in rows
@@ -375,6 +378,8 @@ async def _speed_test_run(body, request, db):
     model = str(body.get("model") or "").strip()
     if not model:
         raise HTTPException(status_code=400, detail="缺少 model")
+    if is_image_model(model):
+        raise HTTPException(400, "图片模型请通过生图接口调用，不支持文本测速")
     try:
         max_tokens = max(16, min(512, int(body.get("max_tokens") or 64)))
     except (TypeError, ValueError):

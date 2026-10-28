@@ -1,0 +1,20 @@
+# wb2api 的 Codex CLI 接入示例，手动合并到客户端配置。
+# 使用账号池网关，在管理台创建有效 API Key。
+# Linux/macOS: export WB2API_API_KEY='<API_KEY>'
+# PowerShell: $env:WB2API_API_KEY='<API_KEY>'
+# 启动：codex --profile wb2api
+# WB2API_API_KEY 是本示例的客户端变量，不是服务端兼容参数。
+
+[model_providers.wb2api]
+name = "wb2api"
+base_url = "http://127.0.0.1:8790/v1"
+wire_api = "responses"
+env_key = "WB2API_API_KEY"
+
+[profiles.wb2api]
+model = "glm-5.2"
+model_provider = "wb2api"
+
+# 模型请替换为 /v1/models 中当前 Key 有权使用的 ID。
+# 远程接入时替换主机和端口；独立 converter 的端口和 Key 单独配置。
+# Anthropic 客户端 Base URL 为 http://127.0.0.1:8790，不附加请求路径。

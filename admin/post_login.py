@@ -7,6 +7,7 @@ from datetime import datetime
 
 from admin.db import SessionLocal
 from admin.models import Account, SystemSetting
+from admin.upstream_errors import UpstreamError
 
 _PREFIX = 'post_login_automation:'
 _queue = queue.Queue()
@@ -19,6 +20,17 @@ _resources = queue.Queue()
 _resource_workers = []
 _resource_pending = set()
 _model_init_lock = threading.Lock()
+
+
+def _resource_region_issue(auth_json):
+    try:
+        auth = json.loads(auth_json).get('auth') or {}
+        domain = str(auth.get('domain') or '').lower().strip().rstrip('.')
+    except (ValueError, TypeError, AttributeError):
+        return ''
+    if domain in ('workbuddy.ai', 'www.workbuddy.ai', 'codebuddy.ai', 'www.codebuddy.ai'):
+        return '国际版账号凭证无法访问当前国内接口，请导入 WorkBuddy 国内版凭证'
+    return ''
 
 
 def _resource_worker():
@@ -35,6 +47,11 @@ def _resource_worker():
                 if not acc:
                     continue
                 original = acc.auth_json
+            region_issue = _resource_region_issue(original)
+            if region_issue:
+                _save_resource(account_id, 'unsupported_region', [region_issue])
+                _log.warning('跳过资源初始化 account_id=%s：%s', account_id, region_issue)
+                continue
             try:
                 with backend.AccountSession(original) as session:
                     balance = session.fetch_balance()
@@ -65,6 +82,14 @@ def _resource_worker():
                 _save_resource(account_id, 'invalid_credential', [str(exc)])
                 _log.warning('账号凭证不完整，跳过资源初始化 account_id=%s', account_id)
                 continue
+            except UpstreamError as exc:
+                if exc.http_status in (401, 403):
+                    _save_resource(account_id, 'auth_required', ['上游拒绝鉴权，请重新授权登录后刷新余额'])
+                    _log.warning('资源初始化鉴权失败 account_id=%s HTTP=%s，请重新授权登录', account_id, exc.http_status)
+                    continue
+                errors.append('余额刷新失败，可在账号页重试')
+                _log.warning('新增账号余额刷新失败 account_id=%s HTTP=%s code=%s',
+                             account_id, exc.http_status, exc.upstream.get('code'))
             except Exception:
                 errors.append('余额刷新失败，可在账号页重试')
                 _log.exception('新增账号余额刷新失败 account_id=%s', account_id)
@@ -208,13 +233,18 @@ def resume():
     with SessionLocal() as db:
         empty_models = db.query(ModelConfig).first() is None
         resource_todo = set()
+        blocked_resources = set()
         for row in db.query(SystemSetting).filter(SystemSetting.key.like(_RESOURCE_PREFIX + '%')):
             try:
-                if json.loads(row.value).get('status') in ('queued', 'running', 'failed'):
+                status = json.loads(row.value).get('status')
+                if status in ('unsupported_region', 'auth_required', 'invalid_credential'):
+                    blocked_resources.add(int(row.key[len(_RESOURCE_PREFIX):]))
+                if status in ('queued', 'running', 'failed'):
                     resource_todo.add(int(row.key[len(_RESOURCE_PREFIX):]))
             except (ValueError, TypeError, AttributeError):
                 pass
-        active = db.query(Account).filter(Account.status == 'active').all()
+        active = [a for a in db.query(Account).filter(Account.status == 'active').all()
+                  if a.id not in blocked_resources]
         resource_todo.update(a.id for a in active if a.last_sync_at is None)
         if empty_models and active:
             resource_todo.add(active[0].id)

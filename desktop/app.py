@@ -128,20 +128,20 @@ def backend(port: int):
             time.sleep(1)
     threading.Thread(target=runtime_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=port, log_config=None, access_log=False,
-                loop="asyncio", http="h11", ws="none", timeout_graceful_shutdown=5)
+                loop="asyncio", http="h11", ws="none", proxy_headers=False, timeout_graceful_shutdown=5)
 
 
 SPLASH = """<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#e6f6f0,#f5f7fa 55%,#e8effa);color:#172b29;font:15px 'Segoe UI','Microsoft YaHei',sans-serif;display:grid;place-items:center;min-height:100vh}
 main{width:min(480px,90vw);padding:40px;background:#fffffff0;border:1px solid white;border-radius:28px;box-shadow:0 20px 70px #163c3020}.tag{color:#148665;font-size:12px;letter-spacing:2px}h1{font-size:28px;margin:10px 0 26px}p{color:#657670;line-height:1.8}.bar{height:5px;background:#e6f5ed;border-radius:6px;overflow:hidden}.bar:after{content:'';display:block;width:40%;height:100%;background:#148665;animation:load 1.3s infinite}@keyframes load{to{transform:translateX(260%)}}
 button{padding:11px 16px;border:0;border-radius:10px;cursor:pointer;background:#e8f5ef;color:#146e55;margin:4px 6px 4px 0}.hint{font-size:12px;color:#8a9792}textarea{width:100%;height:190px;border:1px solid #d7e4dd;border-radius:10px;padding:12px;resize:vertical}
-</style><div class="pywebview-drag-region" style="position:fixed;top:0;left:0;right:100px;height:36px"></div><div style="position:fixed;top:0;right:0"><button aria-label="最小化" onclick="pywebview.api.window_action('minimize')">−</button><button aria-label="关闭窗口" onclick="pywebview.api.window_action('close')">×</button></div><main><div class="tag">你的本地 AI 网关</div><h1>WorkBuddy2API</h1><p class="hint">v__VERSION__</p><p id="status">正在启动本地服务…</p><div class="bar" id="bar"></div><p class="hint">就绪后自动进入工作台，无需登录管理台。<br>首次运行可能稍慢，请保留账号数据。</p>
+</style><div class="pywebview-drag-region" style="position:fixed;top:0;left:0;right:100px;height:36px"></div><div style="position:fixed;top:0;right:0"><button aria-label="最小化" onclick="pywebview.api.window_action('minimize')">−</button><button aria-label="关闭窗口" onclick="pywebview.api.window_action('close')">×</button></div><main><div class="tag">你的本地 AI 网关</div><h1>wb2api</h1><p class="hint">v__VERSION__</p><p id="status">正在启动本地服务…</p><div class="bar" id="bar"></div><p class="hint">就绪后自动进入工作台，无需登录管理台。<br>首次运行可能稍慢，请保留账号数据。</p>
 <button onclick="pywebview.api.retry_start()">重试启动</button><button id="diagnosticButton" hidden onclick="showDiagnostic()">启动诊断</button><section id="diagnostic" hidden><p>服务尚未启动也可复制或导出诊断。</p><textarea id="report" readonly aria-label="启动诊断"></textarea><button onclick="copyReport()">复制诊断</button><button onclick="downloadReport()">导出诊断</button></section></main>
 <script>
 const began=Date.now();let reading=false;
 async function showDiagnostic(){try{const r=await pywebview.api.startup_diagnostic();document.getElementById('report').value=r.report;document.getElementById('diagnostic').hidden=false}catch(e){document.getElementById('status').textContent='诊断暂不可用，请重试'}}
 function copyReport(){const r=document.getElementById('report');r.select();document.execCommand('copy')}
-function downloadReport(){const u=URL.createObjectURL(new Blob([document.getElementById('report').value],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=u;a.download='workbuddy-startup-diagnostic.txt';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
+function downloadReport(){const u=URL.createObjectURL(new Blob([document.getElementById('report').value],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=u;a.download='wb2api-startup-diagnostic.txt';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
 setInterval(async()=>{if(reading||!window.pywebview?.api)return;reading=true;try{const s=await pywebview.api.startup_status();document.getElementById('status').textContent=s.message;document.getElementById('diagnosticButton').hidden=!(s.failed||Date.now()-began>30000);document.getElementById('bar').hidden=s.failed}catch(e){}finally{reading=false}},1000);
 </script></html>""".replace("__VERSION__", VERSION)
 
@@ -254,7 +254,7 @@ class DesktopAPI:
     def startup_diagnostic(self):
         from admin.request_metrics import safe_error_text
         import platform
-        report = f"WorkBuddy2API {VERSION} 启动诊断\n系统：{platform.platform()}\n阶段：{self.message}\n环境：{self.runtime_message}\n"
+        report = f"wb2api {VERSION} 启动诊断\n系统：{platform.platform()}\n阶段：{self.message}\n环境：{self.runtime_message}\n"
         process = self.process
         report += f"服务进程：{process.poll() if process else '未启动'}（None 表示运行中）\n"
         log = self.base / "logs/backend.log"
@@ -290,7 +290,7 @@ class DesktopAPI:
             choice = ctypes.windll.user32.MessageBoxW(
                 None, f"发现新版本 {latest['tag']}（当前 v{VERSION}）。\n\n"
                 "是否立即更新？\n选择“是”将下载、校验并重启客户端；选择“否”暂不更新。",
-                "WorkBuddy2API · 版本更新", 0x00010024)
+                "wb2api · 版本更新", 0x00010024)
             if choice != 6 or self.closing.is_set():  # IDYES
                 return
             response = self.download_update(latest["id"])
@@ -478,7 +478,7 @@ class DesktopAPI:
                 logging.exception("Failed to restore window")
         try:
             self.window = webview.create_window(
-                f"WorkBuddy2API · v{VERSION}", html=SPLASH, js_api=Bridge(self),
+                f"wb2api · v{VERSION}", html=SPLASH, js_api=Bridge(self),
                 width=1280, height=860, min_size=(900, 600),
                 background_color="#f5f6f8", text_select=True, frameless=True, easy_drag=False)
         except Exception as exc:
@@ -676,7 +676,7 @@ def run(tray_mode: bool = False):
     try:
         msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
-        ctypes.windll.user32.MessageBoxW(None, "WorkBuddy2API 已在运行，请查看系统托盘图标。", "WorkBuddy2API", 64)
+        ctypes.windll.user32.MessageBoxW(None, "wb2api 已在运行，请查看系统托盘图标。", "wb2api", 64)
         lock.close()
         return
     api = tray = None
@@ -693,12 +693,12 @@ def run(tray_mode: bool = False):
             if not tray.start():
                 ctypes.windll.user32.MessageBoxW(
                     None, "托盘组件不可用，将以窗口模式启动。\n\n数据和日志：" + str(base),
-                    "WorkBuddy2API", 48)
+                    "wb2api", 48)
                 tray_mode = False
 
         if not tray_mode:
             # Original path: window owns everything, closing it exits the app.
-            window = webview.create_window(f"WorkBuddy2API · v{VERSION}", html=SPLASH, js_api=Bridge(api),
+            window = webview.create_window(f"wb2api · v{VERSION}", html=SPLASH, js_api=Bridge(api),
                                           width=1280, height=860, min_size=(900, 600),
                                           background_color="#f5f6f8", text_select=True, frameless=True, easy_drag=False)
             api.window = window
@@ -714,7 +714,7 @@ def run(tray_mode: bool = False):
         threading.Thread(target=api._state_monitor, name="tray-state", daemon=True).start()
         webview.create_window("__tray_host__", html="<!doctype html><title></title>",
                               width=1, height=1, frameless=True, hidden=True)
-        tray.notify("WorkBuddy2API 已在托盘运行，右键图标启动服务。")
+        tray.notify("wb2api 已在托盘运行，右键图标启动服务。")
         api.tray_startup_update_check = True
         def start_tray_shell():
             api.retry_runtime()
@@ -725,7 +725,7 @@ def run(tray_mode: bool = False):
                       icon=str(ROOT / "desktop/assets/app.ico"))
     except Exception as exc:
         logging.exception("Desktop failed")
-        ctypes.windll.user32.MessageBoxW(None, str(exc) + f"\n\n数据和日志：{base}", "WorkBuddy2API", 16)
+        ctypes.windll.user32.MessageBoxW(None, str(exc) + f"\n\n数据和日志：{base}", "wb2api", 16)
     finally:
         if api:
             api.stop()

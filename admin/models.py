@@ -179,6 +179,7 @@ class UsageLog(Base):
         Index("ix_usage_logs_key_created", "api_key_id", "created_at"),
         Index("ix_usage_logs_model_created", "model", "created_at"),
         Index("ix_usage_logs_error_created", "error_kind", "created_at"),
+        Index("ix_usage_logs_ip_created", "client_ip", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -191,7 +192,7 @@ class UsageLog(Base):
     completion_tokens = Column(Integer, nullable=True, default=None)
     total_tokens = Column(Integer, nullable=True, default=None)
     cached_tokens = Column(Integer, nullable=True, default=None)
-    # 发起请求的真实客户端 IP（经反代时取 X-Forwarded-For 首个，否则 X-Real-IP / 直连 IP）
+    # 与 IP 封禁一致：仅信任已配置代理提供的转发头，直连使用 socket 地址。
     client_ip = Column(String(64), default="")
     # 用途标识（透传给上游的 X-Agent-Purpose），便于风控审计与上游请求用量对齐
     use_case = Column(String(64), default="")
@@ -205,6 +206,63 @@ class UsageLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class IPRequestBucket(Base):
+    """Hourly ingress counters, including requests rejected before authentication."""
+    __tablename__ = "ip_request_buckets"
+    __table_args__ = (Index("ix_ip_request_bucket_hour", "hour"),)
+    ip = Column(String(64), primary_key=True)
+    hour = Column(DateTime, primary_key=True)
+    requests = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+    blocked = Column(Integer, nullable=False, default=0)
+    first_seen = Column(DateTime, nullable=False)
+    last_seen = Column(DateTime, nullable=False)
+
+
+class BlockedIP(Base):
+    """Manually blocked public client IPs.
+
+    The gateway checks this table before API-key authentication, so a blocked
+    client cannot keep probing keys or spend account-pool capacity.
+    """
+
+    __tablename__ = "blocked_ips"
+    __table_args__ = (
+        Index("ux_blocked_ips_ip", "ip", unique=True),
+        Index("ix_blocked_ips_enabled", "enabled"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ip = Column(String(64), nullable=False)
+    enabled = Column(Integer, nullable=False, default=1)
+    note = Column(String(255), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ClientIdentity(Base):
+    """Client-reported identifiers; never a verified hardware identity."""
+    __tablename__ = "client_identities"
+    kind = Column(String(20), primary_key=True)
+    digest = Column(String(64), primary_key=True)
+    value = Column(String(128), nullable=False)
+    blocked = Column(Integer, nullable=False, default=0)
+    note = Column(String(255), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ClientIdentitySeen(Base):
+    __tablename__ = "client_identity_seen"
+    __table_args__ = (Index("ix_client_identity_seen_ip", "ip", "key_id"),)
+    kind = Column(String(20), primary_key=True)
+    digest = Column(String(64), primary_key=True)
+    ip = Column(String(64), primary_key=True)
+    key_id = Column(Integer, primary_key=True)
+    first_seen = Column(DateTime, nullable=False)
+    last_seen = Column(DateTime, nullable=False)
+
+
 class RequestAudit(Base):
     """Request outcomes, including admission rejections and client disconnects.
 
@@ -215,11 +273,15 @@ class RequestAudit(Base):
     __table_args__ = (
         Index("ix_request_audit_key_started", "api_key_id", "started_at"),
         Index("ix_request_audit_started", "started_at"),
+        Index("ix_request_audit_ip_started", "client_ip", "started_at"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     request_id = Column(String(32), nullable=False)
     api_key_id = Column(Integer, nullable=False)
+    account_id = Column(Integer, nullable=True)
+    client_ip = Column(String(64), default="")
     path = Column(String(80), nullable=False)
+    user_agent = Column(String(512), default="")
     model = Column(String(120), default="")
     started_at = Column(DateTime, nullable=False)
     finished_at = Column(DateTime, nullable=False)

@@ -1,12 +1,10 @@
-# workbuddy2api
+# wb2api
 
-把 WorkBuddy / CodeBuddy 登录态接入 OpenAI、Responses 和 Anthropic 兼容 API，提供多账号池、API Key 和自动化管理界面。
+公开文档统一使用 `wb2api`；上游客户端统称 `wb`。上游域名、协议字段、现有环境变量和运行数据路径继续按源码保留。文档中的 `***` 是脱敏占位符，不能作为实际配置值。项目仓库：[xiaofan6ya/wb2api](https://github.com/xiaofan6ya/wb2api)。
+
+把 wb 登录态接入 OpenAI、Responses 和 Anthropic 兼容 API，提供多账号池、API Key 和自动化管理界面。
 
 项目包含两部分：**API 反代网关**负责协议转换、账号轮换和用量记账；**多账号管理与自动化平台**负责手机号登录、凭证导入、积分到期管理、签到、成长任务和宠物旅行。可在服务器部署，也可使用 Windows EXE 或 Android APK 独立运行。
-
-## 项目运行截图
-
-![账号池与运行概览](images/img_1.png)
 
 ## 模块说明
 
@@ -18,21 +16,11 @@
 | 积分到期 | 逐账号积分包快照、临近到期排行、到期风险与消耗构成 |
 | 成长任务 | 查看任务、参与、执行可自动化任务、领取奖励、查看逐账号执行结果 |
 | 成长计划 | 连续登录、能量、活跃地图、年度热力图、宠物图鉴、盲盒与领取记录 |
-| 权益获取 | 每日检查官方可领取权益并自动领取；保留 DeepSeek 补偿 500 积分一次性批量操作（2026/10/22 截止） |
 | 定时任务 | 签到、刷新余额/到期快照、同步模型、成长任务、成长计划巡检与 token 保活 |
 | 使用记录与日志 | 按 Key、账号、模型、端点查询用量、token、耗时及错误，查看趋势和汇总 |
 | 客户端参数与同步 | 管理客户端版本/请求参数档案，将本机配置与账号同步到其他部署 |
 | 本地客户端 | Windows EXE、Android APK 自动进入工作台，后台运行、局域网接入、更新公告和可选升级 |
 
-<details>
-<summary>查看更多运行截图</summary>
-
-![运行界面二](images/img_2.png)
-![运行界面三](images/img_3.png)
-![运行界面四](images/img_4.png)
-![手机号登录与入库](images/img_5.png)
-
-</details>
 
 ## 阅读导航
 
@@ -67,7 +55,7 @@ OpenAI / Responses / Anthropic 兼容客户端
           Key 配额与分组 → 选号 / 租约 / 冷却 → 协议适配
                     │
                     ▼
-              WorkBuddy 上游 API
+              wb 上游 API
 
 可选：converter.py（独立 8787，或挂载至 8790/gw）
       使用本机 .info 登录态，独立鉴权，不经过共享账号池配额
@@ -85,7 +73,7 @@ OpenAI / Responses / Anthropic 兼容客户端
 ## 项目结构
 
 ```text
-workbuddy2api/
+wb2api/
 ├── README.md                    # 功能、结构、部署与使用说明
 ├── BUILD.md                     # EXE / APK 构建与发布指南
 ├── main.py                      # 单端口启动、进程与端口管理、日志转发
@@ -125,8 +113,6 @@ workbuddy2api/
 │   ├── growth_plans.py          # 成长任务完成策略
 │   ├── growth_plan.py           # 成长计划日常巡检
 │   ├── growth_center.py         # 成长中心快照与操作记录
-│   ├── compensation.py          # 限时补偿权益、领取去重与自动巡检
-│   ├── benefits.py              # 每日权益获取与旧专属任务迁移
 │   ├── scheduler.py             # 定时任务与 token 保活
 │   ├── jobrunner.py             # 批量后台任务与进度
 │   ├── client_profile.py       # 客户端参数档案
@@ -154,18 +140,16 @@ workbuddy2api/
 │   ├── export_credential_key.py # 生成私有的官方凭证加密配置
 │   ├── asar_grep.py / asar_slice.py
 │   └── README.md
-├── docs/
-│   ├── protocol-reference.md    # 协议逆向、实现依据与历史排障报告
-│   ├── 2api-increment-risk-scheduling.md
-│   └── RELEASE_NOTES_*.md       # 各版本更新公告
-└── images/                      # 项目运行截图
+└── docs/
+    ├── PUBLICATION.md           # 文档公开范围与迁移约定
+    └── RELEASE_NOTES_*.md       # 各版本公开更新公告
 ```
 
-本地的 `.env`、数据库、账号凭证、SSH 部署配置、签名文件、`build/`、`dist/` 和 `tests/` 不纳入 Git。`scripts/` 中的通用脚本保留，维护者本机的一次性部署脚本与探针不公开。逆向过程和历史分析在 `docs/`，正常使用无需解包官方客户端。
+本地的 `.env`、数据库、账号凭证、SSH 部署配置、签名文件、`build/`、`dist/` 和 `tests/` 不纳入 Git。`scripts/` 中的通用脚本保留，维护者本机的一次性部署脚本与探针不公开。内部分析、协议研究、取证资料和旧截图保存在仓库外，不随迁移源码公开。
 
 ## Windows 与 Android
 
-从 [GitHub Releases](https://github.com/xiaofan6ya/wb2api/releases) 下载对应平台安装包及 SHA256 校验文件。
+从 [Releases](https://github.com/xiaofan6ya/wb2api/releases) 下载对应平台安装包及 SHA256 校验文件。1.13.0 及更早版本需要手动安装 1.14.0 一次，此后软件从新仓库检查更新。覆盖安装保留原数据目录，Android 必须使用同签名安装包。
 
 | 平台 | 使用方式 | 详细说明 |
 | --- | --- | --- |
@@ -186,7 +170,7 @@ Android 后台稳定运行需要允许通知、后台运行及取消电池优化
 
 ```bash
 git clone https://github.com/xiaofan6ya/wb2api.git
-cd workbuddy2api
+cd wb2api
 umask 077
 printf 'ADMIN_USERNAME=admin\nADMIN_PASSWORD=%s\nADMIN_JWT_SECRET=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env.docker
 cat .env.docker  # 查看并保存自动生成的后台密码
@@ -199,7 +183,7 @@ docker compose --env-file .env.docker logs --tail=100 admin
 
 默认只运行 **一个 admin 容器**，包含 Web UI、多账号网关与定时任务。SQLite 保存在 `admin_data` 命名卷，限流使用进程内存，无需另装 MySQL 或 Redis。保持单 worker，使账号租约、短信出口限流与调度任务共享状态。
 
-Compose 中的 `converter` 是可选的单账号转换器，已放入 `standalone` profile，admin 不依赖它。只有需要独立读取宿主机 `credentials/` 凭证目录时，才配置 `CODEBUDDY2OPENAI_KEY`，并执行：
+Compose 中的 `converter` 是可选的单账号转换器，已放入 `standalone` profile，admin 不依赖它。只有需要独立读取宿主机 `credentials/` 凭证目录时，才在 `.env.docker` 中配置独立转换器的访问密钥（参数原名以 Compose 文件为准），并执行：
 
 ```bash
 docker compose --env-file .env.docker --profile standalone up -d --build
@@ -213,7 +197,7 @@ docker compose --env-file .env.docker --profile standalone up -d --build
 
 ```bash
 docker compose --env-file .env.docker stop admin
-docker compose --env-file .env.docker cp admin:/data/workbuddy.db ./workbuddy-backup.db
+docker compose --env-file .env.docker cp admin:/data/. ./backup-data/
 docker compose --env-file .env.docker start admin
 ```
 
@@ -233,7 +217,7 @@ docker compose --env-file .env.docker start admin
 | SQLite 或 MySQL | 保存账号、Key、日志及调度；单机可用 SQLite，已有 MySQL 部署可继续使用 |
 | Redis | 可选，用于 Redis 限流后端；单进程也可使用内存限流 |
 | Node.js | 调用本机官方客户端设备 SDK 时需要；Windows 版自动准备 |
-| 官方 WorkBuddy 客户端 | 扫描本机登录态、自动读取加密凭证能力或使用其设备 SDK 时需要；手机号入库本身不要求安装 |
+| 官方 wb 客户端 | 扫描本机登录态、自动读取加密凭证能力或使用其设备 SDK 时需要；手机号入库本身不要求安装 |
 
 JDK、Android SDK 和 Gradle 只在构建 APK 时需要，版本和安装路径见 [构建说明](BUILD.md)。
 
@@ -243,7 +227,7 @@ JDK、Android SDK 和 Gradle 只在构建 APK 时需要，版本和安装路径�
 
 ```bash
 git clone https://github.com/xiaofan6ya/wb2api.git
-cd workbuddy2api
+cd wb2api
 python -m venv .venv
 # Linux/macOS
 source .venv/bin/activate
@@ -255,7 +239,7 @@ cp .env.example .env
 编辑 `.env`，设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和随机的 `ADMIN_JWT_SECRET`。模板保留 MySQL/Redis 配置；单机 SQLite 可改为：
 
 ```dotenv
-ADMIN_DATABASE_URL=sqlite:///./workbuddy_admin.db
+ADMIN_DATABASE_URL=sqlite:///./wb2api.db
 ADMIN_REDIS_URL=
 ADMIN_GATEWAY_LIMIT_BACKEND=memory
 ```
@@ -294,7 +278,7 @@ python converter.py --host 127.0.0.1 --port 8787 --api-key "<自设访问密钥>
 | 参数 | 用途 |
 | --- | --- |
 | `--host` / `--port` | 默认 `127.0.0.1:8787`，按需修改 |
-| `--api-key` | 要求客户端携带指定密钥，也可通过 `CODEBUDDY2OPENAI_KEY` 设置 |
+| `--api-key` | 要求客户端携带指定密钥 |
 | `--log PATH` | 将请求处理日志写入指定文件 |
 | `--desensitize` | 启用请求文本兼容处理 |
 | `--no-compact` | 配合上项保留更多原始文本 |
@@ -329,7 +313,7 @@ python converter.py --host 127.0.0.1 --port 8787 --api-key "<自设访问密钥>
 
 ### 导出与跨设备迁移
 
-界面默认导出官方新版加密凭证：单账号为 `.info`，批量为 `.jsonl`；批量文件用于系统恢复，写入官方客户端时使用单账号 `.info`。Windows 可读取已安装 WorkBuddy 的加密能力；Linux / Docker 需配置匹配的私有密钥文件，具体步骤见 [凭证配置脚本](scripts/README.md#凭证配置)。
+界面默认导出官方新版加密凭证：单账号为 `.info`，批量为 `.jsonl`；批量文件用于系统恢复，写入官方客户端时使用单账号 `.info`。Windows 可读取已安装 wb 的加密能力；Linux / Docker 需配置匹配的私有密钥文件，具体步骤见 [凭证配置脚本](scripts/README.md#凭证配置)。
 
 “系统明文备份”用于未配置解密能力的设备迁移，包含可直接使用的账号令牌。加密导出不会延长令牌有效期，不同官方客户端版本的密钥也未必兼容。请将导出文件保存在私有位置。
 
@@ -345,9 +329,33 @@ python converter.py --host 127.0.0.1 --port 8787 --api-key "<自设访问密钥>
 
 使用记录与用量日志支持按 Key、账号、模型及端点查询，日志中的模型和 Key 使用可搜索下拉，也可手动输入筛选。默认查看近期数据，需要长期趋势时调整时间窗口。管理面板状态写入 `?tab=`，刷新页面后保留当前面板，也可分享对应面板链接。
 
+用量日志和请求动态直接展示客户端 IP，支持复制及点击筛选。IP 管理的活跃 IP 表可筛选高频低 Token、高频低积分，设置最少请求数、平均消耗上限及 IP 地址；均值按成功用量记录统计，未返回 Token 的请求不作为低消耗。入口次数包含鉴权拒绝、限流和封禁；点击 IP 可查看用量明细。IP 仅从受信任代理的转发头读取，反向代理应覆盖 `X-Real-IP`；直连使用连接来源地址。
+
+反向代理必须让后端看到真实客户端 IP，否则所有请求看起来都是代理的 IP，登录防爆破会退化成「全局锁」——任何人打几次错误密码就能把管理员锁在门外。nginx 站点配置（放进反代本服务的 `location` 块）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8790;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;              # 覆写，后端只信任这个
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;                                   # 流式响应必需
+}
+```
+
+后端默认只信任 `127.0.0.1,::1` 直连对端提交的转发头（`ADMIN_TRUSTED_PROXY_IPS` 可改为 CIDR 列表）；不可信来源自报的 `X-Real-IP` / `X-Forwarded-For` 一律忽略。登录失败计数按「(IP, 用户名) 对 + 同 IP 全局 + 设备/浏览器指纹」三个维度独立累计：攻击者只能锁住「自己的 IP × 他猜的用户名」，锁不到管理员的来源 IP。
+
+调用详情先加载摘要，展开某次请求后按需读取正文，每页最多 64 KiB；翻页替换当前预览，关闭详情取消正在加载的预览。完整正文通过独立 JSONL 下载，不在页面中同时展开或复制多份大正文。记录时复用受限的原始字节缓存，避免重新序列化完整请求。
+
+调用详情支持下载 JSONL（用量、入站请求、转换后各次实际发往上游的请求和诊断）。在用量日志打开“记录请求详情”即时生效，默认关闭，仅记录开启后进入的 JSON 推理请求。请求内容仅存服务进程内存，1 小时过期，最多 200 条或 64 MiB，达到上限淘汰最旧记录；重启全部清空，开关恢复环境初始值。单请求入站及所有上游尝试合计上限 8 MiB，单份正文由 `ADMIN_LOG_PAYLOAD_MAX_MB` 控制（默认 8，范围 1–8），超出截断并明确标记。请求头采用保留名单并隐藏凭据，正文按实际序列化内容保存，可能包含完整对话；仅管理员可以读取。关闭停止新请求采集，已有缓存可手动清空。历史未记录、过期或淘汰的内容无法恢复。`ADMIN_LOG_REQUEST_PAYLOAD=1` 可改变重启后的初始开关。多进程部署各进程的开关和缓存独立，需使用单工作进程进行此项临时排查。
+
 ### 客户端参数与跨部署同步
 
-Windows 或源码部署的“客户端参数”页面可探测本机官方客户端版本和请求参数，查看每项取值来源，按需保存、重置或切换来源策略。`auto` 优先现场探测，适合装有官方客户端的电脑；`saved` 优先已保存档案，适合没有官方安装包的服务器。显式设置的 `WORKBUDDY_*` 环境变量优先于这两种策略。
+Windows 或源码部署的“客户端参数”页面可探测本机官方客户端版本和请求参数，查看每项取值来源，按需保存、重置或切换来源策略。`auto` 优先现场探测，适合装有官方客户端的电脑；`saved` 优先已保存档案，适合没有官方安装包的服务器。显式环境变量优先于这两种策略，兼容参数名以源码为准。
+
+探测分两路并逐项标注来源：**安装包**（版本号、commit、部署形态、风控渠道号等，读自官方安装目录）与**本机系统**（os / arch / 内核版本 / CPU 核数 / 内存 / 时区 / 内嵌 Node 版本，仅在装了官方客户端的机器上采纳，取值公式与官方源码一致）。客户端档案只用于展示、同步和需要它的客户端业务；普通模型请求不会自动添加未经实际请求证实的 `X-Stainless-*`、设备、IP、ACP 或链路追踪头。UA 仅在档案或环境中有明确值时使用，Python 的 TLS ClientHello 仍由运行时决定，不能宣称与 Electron 完全一致。
 
 在“同步设置”中配置目标服务地址与设备同步密钥，可推送账号、模型配置和当前生效的客户端参数档案。接收端将档案设为 `saved`，避免服务器探测不到客户端时丢失已同步值。同步使用专门的设备密钥，不使用调用模型的 API Key；同步目标应是自己管理的服务，并使用 HTTPS 或受保护的网络。安卓端将对应区域用于本机服务设置，不提供完整桌面参数管理。
 
@@ -361,14 +369,6 @@ Windows 或源码部署的“客户端参数”页面可探测本机官方客户
 
 ## 自动化与定时任务
 
-### DeepSeek 服务异常补偿 500 积分
-
-账号池 → 管理操作 → 额度与批量管理 → **一键领取 DeepSeek 补偿**，确认后对全部启用账号执行。无需勾选账号，页面只提交一次批量请求，服务端处理逐账号领取并返回实时进度；完成弹窗显示领取成功、失败、已领取、顺延账号数和本次新增积分。
-
-自动检查统一在“定时任务 → 每日检查并领取权益”管理，默认每天一次。当前接入官方补偿权益状态接口，按返回的金额、截止时间和领取状态识别活动，发现可领取权益后自动领取；已领取记录按账号及活动保存，后续出现新的金额或截止时间时重新检查。新类型福利若使用其他接口，需要另行接入。
-
-DeepSeek 补偿是本期一次性手动操作，请于 **2026/10/22 23:59:59（北京时间）** 前领取；没有单独的自动设置菜单或专属定时任务。旧专属任务升级时迁移为每日权益任务，并保留启停状态。领取后刷新余额与到期快照；请求超时先核对官方状态，刷新失败不会重新提交已成功的领取。
-
 账号池的“刷新全部”也通过一次 POST 提交后台任务，显示进度与成功/失败/跳过汇总。账号停用、正在对话或受保护时跳过，可稍后重试。上游接口按账号鉴权，由服务端依次请求，浏览器无需逐账号发送刷新请求。
 
 ### 任务类型
@@ -379,7 +379,6 @@ DeepSeek 补偿是本期一次性手动操作，请于 **2026/10/22 23:59:59（�
 | `refresh_credits` | 更新逐账号积分包与到期快照 |
 | `sync_models` | 同步上游模型列表 |
 | `daily_checkin` | 查询每日积分打卡状态并领取可领取奖励 |
-| `claim_benefits` | 每日查询已接入的官方权益接口，发现有效且未领取的福利后自动领取 |
 | `refresh_growth_tasks` | 更新成长任务列表与状态 |
 | `run_growth_tasks` | 参与、执行可自动化成长任务并领取奖励 |
 | `run_growth_plan` | 巡检活跃、宠物旅行、地图奖励、免费抽奖与盲盒等成长计划活动 |
@@ -413,12 +412,36 @@ OpenAI 使用 `Authorization: Bearer <API Key>`；Anthropic 可使用 `x-api-key
 | 方法与路径 | 用途 |
 | --- | --- |
 | `GET /v1/models` | 当前 Key 有权使用的启用模型 |
+| `GET /v1/balance` | 当前 Key 可用积分的同步快照与网关额度 |
+| `GET /user/balance` | DeepSeek 官方余额接口兼容（`/v1/user/balance` 同义） |
 | `POST /v1/chat/completions` | OpenAI Chat，支持流式和非流式 |
 | `POST /v1/responses` | OpenAI Responses，面向 Responses 兼容客户端 |
 | `POST /v1/messages` | Anthropic Messages，包含工具消息与思考参数兼容处理 |
 | `POST /v1/messages/count_tokens` | Anthropic token 数量本地估算，不请求上游模型 |
+| `POST /v1/images/generations` | AI 文生图，JSON 请求 |
+| `POST /v1/images/edits` | AI 图生图，支持单张图片上传或 JSON 图片来源 |
 
-独立 converter 另外提供 `/v1/balance` 和 `/health`。这些端点不代表共享账号池的总余额或健康状态。
+`GET /v1/models` 保留上游的模型名称、输入与输出上限、能力及思考档位，并提供 `context_length`、`context_window`、`max_input_tokens`、`max_output_tokens`、`reasoning_supported_efforts` 和 `reasoning_default_effort`。上游没有提供的容量返回空值，不填入猜测值。DSH 的模型发现流程可读取上下文与输出上限；是否采用思考档位取决于客户端自身支持。
+
+`GET /v1/balance` 使用同一个 API Key，通过 Bearer 或 `X-API-Key` 鉴权。`balance` / `balance_remain` 是该 Key 可访问的活跃账号余额与 Key 剩余额度两者的较小值；无限额度 Key 使用账号余额。`upstream_balance_remain` 是对应账号范围的上游积分快照，`key_quota` 单独说明网关额度。绑定 Key 只统计绑定账号；公共 Key 排除其他 Key 独占的账号，同 UID 不重复累计。`shared_pool=true` 表示余额由公共 Key 共享，并非该 Key 的独占额度。`synced_at` 是全部纳入账号中最早的同步时间；存在未同步账号时为 `null` 且 `snapshot_complete=false`。此查询不触发逐账号上游刷新，需在管理页或定时任务刷新余额后读取。额度耗尽的有效 Key 仍可查询，返回可用余额 0；停用 Key 返回 403。
+
+`GET /user/balance` 是 DeepSeek 官方余额接口（`https://api.deepseek.com/user/balance`）的兼容实现，`/v1/user/balance` 为同义别名，供 base_url 已带 `/v1` 的 DeepSeek 系客户端与渠道余额检测工具直接使用。返回 DeepSeek 的固定形状（金额为字符串）：
+
+```json
+{
+  "is_available": true,
+  "balance_infos": [{
+    "currency": "CREDITS",
+    "total_balance": "4200.00",
+    "granted_balance": "0.00",
+    "topped_up_balance": "4200.00"
+  }]
+}
+```
+
+口径与 `/v1/balance` 一致：`total_balance` 是该 Key 实际可用积分（账号池余额与 Key 剩余额度取小，无限额度 Key 用账号余额），`is_available` 表示可用积分大于 0。上游没有「赠金 / 充值」的区分，`granted_balance` 恒为 `"0.00"`；记账单位是积分而不是人民币，因此 `currency` 如实标注为 `CREDITS` 而非冒充 `CNY`。同样不触发逐账号上游刷新。
+
+独立 converter 另外提供 `/v1/balance`、`/user/balance` 和 `/health`，挂载时路径为 `/gw/v1/balance`、`/gw/user/balance` 和 `/gw/health`；其余额属于本机桌面登录账号。
 
 ### OpenAI 兼容客户端与 SDK
 
@@ -437,10 +460,10 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8790/v1",
-    api_key=os.environ["WORKBUDDY_API_KEY"],
+    api_key=os.environ["WB2API_API_KEY"],
 )
 result = client.chat.completions.create(
-    model=os.environ["WORKBUDDY_MODEL"],
+    model=os.environ["WB2API_MODEL"],
     messages=[{"role": "user", "content": "你好"}],
 )
 print(result.choices[0].message.content)
@@ -448,31 +471,63 @@ print(result.choices[0].message.content)
 
 SDK 示例需自行安装 `openai`。从其他设备访问时，用 API Keys 页面复制的局域网或服务器地址替换 `127.0.0.1`，保留实际端口。
 
+### AI 生图
+
+生图使用同一套 API Key、模型启停与分组权限、独占账号绑定和并发保护。模型需要明确指定，不能使用 `auto`；例如 `hunyuan-image-alpha`。其他生图模型是否支持某个端点、尺寸、数量和风格，以上游实际能力为准。
+
+模型列表使用 `IMAGE` / `TEXT` 标签区分输出类型。图片模型按上游返回的 `usage.credit` 实际积分记账，不套用文本模型的每千 token 倍率；目录未给价格不代表免费。2026-10-23 单张 `hunyuan-image-alpha` 实测文生图和图生图均返回 5.71 积分，此数字仅为当次实测，不是固定价格。
+
+```python
+image = client.images.generate(
+    model="hunyuan-image-alpha",
+    prompt="白色背景上的蓝色圆形",
+    n=1,
+    response_format="url",
+)
+print(image.data[0].url)
+
+with open("input.png", "rb") as source:
+    edited = client.images.edit(
+        model="hunyuan-image-alpha",
+        image=source,
+        prompt="把圆形改成绿色，保留白色背景",
+    )
+print(edited.data[0].url)
+```
+
+`/v1/images/generations` 使用 JSON，`/v1/images/edits` 可使用 `multipart/form-data` 上传 `image` 文件，也可使用 JSON 传入一个 HTTPS `image_url` 或 base64 `image_data`。当前支持一张输入图片，单图最大 20 MiB，请求体最大 32 MiB；不支持 mask、流式和多图输入。参数支持 `model`、`prompt`、`n`、`size`、`quality`、`style`、`response_format`、`user`，具体取值仍由模型校验。
+
+返回格式支持 `url`（默认）和 `b64_json`。上游返回 URL 时，网关可将腾讯 COS 图片转换为 base64；转换失败仍返回 HTTP 200，在 `warning.code` 中标记 `image_conversion_failed`，并在 `data` 中保留已生成图片地址，避免 SDK 因 5xx 自动重复生图。成功生成的图片按真实上游积分记账。网络超时或 5xx 不自动重发生图，避免结果不明时重复生成和扣费。用量记录区分 `images/generations` 与 `images/edits`。
+
 ### Codex CLI（Responses）
 
 在现有配置中合并一个 provider 和 profile，模型填写后台当前启用且账号有权限的 ID：
 
+也可使用 [wb2api 客户端配置示例](codex-wb2api.example.toml)。示例中的 `WB2API_API_KEY` 是客户端自定义变量，不会修改服务端已有环境变量名。
+
 ```toml
 # ~/.codex/config.toml
-[model_providers.workbuddy]
-name = "WorkBuddy"
+[model_providers.wb]
+name = "wb"
 base_url = "http://127.0.0.1:8790/v1"
 wire_api = "responses"
-env_key = "WORKBUDDY_API_KEY"
+env_key = "WB2API_API_KEY"
 
-[profiles.workbuddy]
+[profiles.wb]
 model = "<MODEL_ID>"
-model_provider = "workbuddy"
+model_provider = "wb"
 ```
 
 ```bash
-export WORKBUDDY_API_KEY='<API_KEY>'
-codex --profile workbuddy
+export WB2API_API_KEY='<API_KEY>'
+codex --profile wb
 ```
 
-PowerShell 使用 `$env:WORKBUDDY_API_KEY='<API_KEY>'` 设置环境变量。共享网关必须使用有效 Key，不能用任意占位字符串代替。
+PowerShell 使用 `$env:WB2API_API_KEY='<API_KEY>'` 设置环境变量。共享网关必须使用有效 Key，不能用任意占位字符串代替。
 
 ### Claude Code / CC Switch（Anthropic）
+
+原有 Opus / Sonnet / Haiku 映射及思考档位保持不变。兼容 `thinking.effort`、`output_config.effort`、`reasoning_effort`、`reasoningEffort` 和 `reasoning.effort`；只传 `thinking.type=adaptive` 或 `enabled` 而未传档位时，沿用默认 `high`，明确关闭时保持关闭。用量日志记录实际转发档位。客户端界面选择若未进入请求体，网关无法还原该选择。
 
 Anthropic Base URL 填 `http://127.0.0.1:8790`，不附加 `/v1` 或 `/v1/messages`，由 SDK 拼接路径。将当前进程的连接变量设置为：
 
@@ -522,24 +577,29 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | `ADMIN_REDIS_URL` | Redis 连接地址，内存限流模式可留空 |
 | `ADMIN_GATEWAY_LIMIT_BACKEND` | `auto` / `redis` / `memory`，按部署选择 |
 | `ADMIN_GATEWAY_RATE_PER_MINUTE` / `ADMIN_GATEWAY_MAX_CONCURRENT` | 每 Key 的分钟请求量与并发准入上限 |
-| `ADMIN_BACKEND` | 上游服务地址，默认 `https://copilot.tencent.com` |
+| `ADMIN_GATEWAY_WAIT_TIMEOUT` / `ADMIN_GATEWAY_REQUEST_TIMEOUT` | Key 并发空位等待默认 `15` 秒（上限 `30`）；推理请求最长 `160` 秒，含排队、上传、上游处理和流式返回 |
+| `ADMIN_GATEWAY_QUEUE_TIMEOUT` | 请求内部排队上限，默认 `90` 秒，覆盖等上游发车间隔与等可用账号，独立于 Key 并发等待 |
+| `ADMIN_JOIN_MAX_CONCURRENT` | 注册接口最大并发数，超过后快速返回重试提示，默认 `4` |
+| `ADMIN_BACKEND` | 上游服务地址；保留实际域名，默认值以配置模板和源码为准 |
 | `ADMIN_CLIENT_AUTH_DIR` | 扫描和切换本机账号时读取的凭证目录 |
-| `WORKBUDDY_CREDENTIAL_KEY_FILE` | 官方加密凭证能力的私有配置路径，Linux / Docker 按需配置 |
-| `ADMIN_ACCOUNT_SELECT` | `expiring`（默认）/ `oldest` / `remain` / `lru` / `weighted` |
+| `ADMIN_ACCOUNT_SELECT` | `expiry_weighted`（默认）/ `throughput` / `expiring` / `oldest` / `remain` / `lru` / `weighted`；控制台保存的策略优先 |
 | `ADMIN_POOL_MAX_IN_FLIGHT` | 单账号最大在途请求数，默认 `3` |
 | `ADMIN_POOL_MAX_ROTATE` / `ADMIN_POOL_MAX_TOTAL_ATTEMPTS` | 单请求的换号与总尝试次数上限，默认均为 `6` |
 | `ADMIN_POOL_RETRY_WINDOW` | 输出前重试窗口，默认 `90` 秒，不中断已经活跃的流 |
 | `ADMIN_SESSION_STICKY` / `ADMIN_SESSION_STICKY_TTL` | 会话粘性及空闲有效期，默认开启、`1800` 秒 |
-| `ADMIN_STREAM_CONNECT_TIMEOUT` / `ADMIN_STREAM_IDLE_TIMEOUT` | 上游连接与流静默超时，默认 `15` / `180` 秒 |
+| `ADMIN_STREAM_CONNECT_TIMEOUT` / `ADMIN_STREAM_IDLE_TIMEOUT` | 上游连接与流静默阶段超时，默认 `15` / `180` 秒；请求总时限另见网关配置 |
 | `ADMIN_STREAM_WRITE_TIMEOUT` / `ADMIN_STREAM_POOL_TIMEOUT` | 写请求与等待连接池超时，默认 `60` / `20` 秒 |
 | `ADMIN_KEEPALIVE_ENABLED` / `ADMIN_KEEPALIVE_HOURS` / `ADMIN_KEEPALIVE_ACCOUNT_GAP` | token 保活开关、执行整点及逐账号间隔 |
+| `ADMIN_LOGIN_MAX_ATTEMPTS` / `ADMIN_LOGIN_IP_MAX_ATTEMPTS` | 登录防爆破阈值：`(IP, 用户名)` 对默认 `5` 次；同 IP 全局默认取其 3 倍。任何人打错密码只锁「他的 IP × 他猜的用户名」，锁不到管理员的 IP |
+| `ADMIN_BAN_RECHECK_ENABLED` / `MIN_INTERVAL` / `MAX_INTERVAL` | 风控封号（11140 等）自动复核：真实模型调用探测，通过即自动解封；退避间隔默认 `1800`–`21600` 秒 |
 | `ADMIN_ANTHROPIC_MODEL_OPUS` / `SONNET` / `HAIKU` | 三档模型别名映射，后三项均使用 `ADMIN_ANTHROPIC_MODEL_` 前缀 |
-| `CONVERTER_API_KEY` / `CODEBUDDY_AUTH_DIR` | 可选 `/gw` 的独立访问密钥与本机凭证目录 |
+| `CONVERTER_API_KEY` | 可选 `/gw` 的独立访问密钥，本机凭证目录另按源码中的兼容参数配置 |
 | `CONVERTER_DESENSITIZE` / `CONVERTER_LOG` | 内嵌 converter 的文本兼容处理与日志位置 |
 | `ADMIN_ENABLE_DOCS` / `ADMIN_DEV_TOOLS` | 交互式 API 文档与本机开发辅助功能开关 |
-| `WORKBUDDY_INSTALL_DIR` / `WORKBUDDY_ASAR_PATH` / `WORKBUDDY_DRIVES` | 官方客户端安装位置自动发现的覆盖项 |
 
-`ADMIN_CLIENT_AUTH_DIR` 用于后台扫描/切换账号，`CODEBUDDY_AUTH_DIR` 用于 converter，二者不能混为一项。服务用户与桌面登录用户不同的 Windows 部署，应填写该用户可读的绝对路径，避免 `%LOCALAPPDATA%` 指向系统账户目录。
+`ADMIN_CLIENT_AUTH_DIR` 用于后台扫描/切换账号，独立 converter 的凭证目录另行配置，二者不能混为一项。服务用户与桌面登录用户不同的 Windows 部署，应填写该用户可读的绝对路径，避免 `%LOCALAPPDATA%` 指向系统账户目录。
+
+DSH 等客户端通过 `<system-reminder>` 注入 `Instructions from: …/AGENTS.md:` 时，网关会把对应正文单独提取保留，不参与可选文本脱敏、运行时摘要或 Responses 历史截断；同一请求里的多份规则按出现顺序保留。已确认导致上游拒绝的固定身份句和模板短语仍执行必要的兼容归一，避免 system 消息中的规则触发 `11128`，项目指令不会整段删除。来源标题中的本地路径会省略，其余运行时元数据继续按原配置处理，消息角色与图片附件保持原有语义。此处理覆盖 Chat、Responses 和 Messages 接口，无需手动复制规则到每个会话。
 
 ## 稳定性与流量治理
 
@@ -547,6 +607,8 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | --- | --- | --- |
 | 账号选择 | 先按积分到期紧迫度筛选，再执行余额、LRU 或加权等策略 | `admin/pool.py`、`admin/credits.py` |
 | 在途租约 | 单账号并发上限，结束或失败时释放资源 | `admin/pool.py`、`admin/routers/proxy.py` |
+| 公平容量队列 | 按 Key 轮转选号与原子占位；相同等待范围合并探测，释放时立即唤醒；最多 512 个等待者、每 Key 64 个 | `admin/capacity_queue.py` |
+| 吞吐优先策略 | 先选并发占用比例最低的账号，同负载保留粘性，再考虑积分到期与闲置 | `admin/routing_policy.py`、`admin/routers/proxy.py` |
 | 会话粘性 | 尽量让同会话使用同一账号，降低多轮切换 | `admin/pool.py` |
 | 独占账号 | 公共池与绑定 Key 使用不同的账号范围 | `admin/account_binding.py` |
 | 错误分类 | 区分凭证、余额、模型限额、账号限速、出口保护和网络错误 | `admin/routers/proxy.py`、`admin/health.py` |
@@ -557,11 +619,15 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 | token 保活 | 串行节流续期，回写刷新后的凭证 | `admin/scheduler.py`、`converter.py` |
 | 分级超时 | 连接、读取、写入、连接池分别设置；流式按静默时间判断 | `admin/routers/proxy.py` |
 
-增加换号次数可能延长失败请求的等待时间，不能消除上游限额。已经向客户端输出的流无法通过服务端换号无缝续接；上游中途失败时，客户端仍可能需要重试。具体调度依据与历史问题分析见 [账号调度加固说明](docs/2api-increment-risk-scheduling.md) 和 [协议参考](docs/protocol-reference.md)。
+增加换号次数可能延长失败请求的等待时间，不能消除上游限额。已经向客户端输出的流无法通过服务端换号无缝续接；上游中途失败时，客户端仍可能需要重试。
+
+多人共享 Key 时，可在积分到期页面把自动选号切到“吞吐优先”，并在 Key 页面为共享 Key 单独设置并发和 RPM。全局默认仍是每 Key 4 路并发、60 次/分钟；调度优化不会自动扩大现有权限。可先从共享 Key 16 路并发、240 次/分钟开始观察，再根据健康账号数、首字延迟、429 和排队 P95 调整；单账号默认 3 路和每账号 75ms 启动间隔继续保留。公平排队让不同 Key 轮流获得新空位，已启动的长请求不会被抢占；满池时仍需要等待，要求硬隔离可使用独占账号绑定。
+
+账号租约和容量公平队列均为进程内状态，建议单个网关 worker 管理共享池。Redis 可共享 Key 准入和账号发车时钟，但不会把账号租约变成跨进程租约。多 worker 部署不能把每进程上限误认为全局账号上限。日志中的 `account_queue_wait`、`gateway_queue_wait`、`upstream_queue_wait` 可分别识别账号容量、Key 准入和发车间隔的等待。
 
 ## 日志与常见问题
 
-使用 `main.py` 时查看 `logs/`，Windows 版查看 `%LOCALAPPDATA%\WorkBuddy2API\logs/`，Docker 使用 `docker compose --env-file .env.docker logs --tail=100 admin`。用量日志可结合账号、模型、端点、耗时和错误码定位单次失败。
+使用 `main.py` 时查看 `logs/`，Windows 版查看 `%LOCALAPPDATA%\***\logs/`，Docker 使用 `docker compose --env-file .env.docker logs --tail=100 admin`。用量日志可结合账号、模型、端点、耗时和错误码定位单次失败。
 
 | 现象 | 检查方向 |
 | --- | --- |
@@ -594,8 +660,7 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 
 ## 文档与构建
 
-- [协议逆向、实现说明与历史排障报告](docs/protocol-reference.md)
-- [账号调度、出口风险与维护任务加固](docs/2api-increment-risk-scheduling.md)
+- [文档公开范围与迁移约定](docs/PUBLICATION.md)
 - [EXE / APK 构建与发布](BUILD.md)：根目录 `build.bat` 可统一构建两端
 - [通用工具脚本](scripts/README.md)：守护进程、凭证配置与 ASAR 工具
 - [1.0.4 更新公告](docs/RELEASE_NOTES_1.0.4.md)
@@ -604,16 +669,8 @@ CC Switch 中对应填写 Anthropic 服务地址、后台 API Key 和模型。�
 
 ## 协议与致谢
 
-本项目使用 [MIT License](LICENSE)，与腾讯、WorkBuddy、CodeBuddy、OpenAI、Anthropic 无官方关联。
+本项目依据 [MIT License](LICENSE) 发布，为独立项目。
 
-本项目的协议转换与多账号共享思路参考了社区已有实现，保留以下署名与引用：
-
-| 项目 | 作者 | 许可 | 参考内容 |
-| --- | --- | --- | --- |
-| [codebuddy2openai](https://github.com/HanHan666666/codebuddy2openai) | HanHan666666 | MIT | 从客户端登录态提供 OpenAI 兼容接口的思路 |
-| [workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) | Sliverkiss | MIT | 多账号池、错误处置、会话粘性、限流与保活设计 |
-| [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) | linguo2625469 | MIT | 可视化运维面板的信息架构与交互设计 |
-
-本项目以 Python 实现，具体适配、账号治理、客户端和自动化逻辑见源码。引用范围、实现背景与历史说明保留在技术文档；若署名或引用描述有误，欢迎通过 Issue 指正。
+项目实现以 Python 为主。第三方依赖及其许可声明保留在对应文件和资源中；旧仓库地址及内部研究记录不随本次迁移公开。
 
 项目早期代码和文档由 [DeepSeek](https://platform.deepseek.com) 与 [DSH](https://github.com/deepseek-ai/deepseek-harness) 协助完成。

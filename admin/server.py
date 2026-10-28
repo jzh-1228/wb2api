@@ -1,21 +1,22 @@
 """管理后台 FastAPI 入口：登录、挂载路由、托管前端静态页、启动时建库建表。"""
+import hashlib
 import logging
 import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from admin.config import settings
-from admin.db import SessionLocal, init_db, wait_database_ready
+from admin.db import SessionLocal, get_db, init_db, wait_database_ready
 from admin.models import SystemSetting
 from admin.routers import (accounts, credits, groups,
                            growth, keys, login as login_router, logs, models,
                            proxy, schedules, stats, sync)
-from admin.ratelimit import (clear_failures, get_client_ip, get_trusted_client_ip,
+from admin.ratelimit import (client_ip_from_request, clear_failures,
                              is_locked, record_failure)
 from admin.security import (
     create_admin_token,
@@ -24,14 +25,20 @@ from admin.security import (
     verify_password,
 )
 from admin.gateway_limits import GatewayAdmissionMiddleware
+from admin.ip_access import IPBlockMiddleware
 from admin.routers import releases
 from admin.routers import audio
+from admin.routers import images
 from admin.routers import growth_center
-from admin.routers import benefits
+from admin.routers import ip_management
 from admin import credit_journal  # register transactional balance observations
 from admin.routers import maintenance
 
 logger = logging.getLogger("admin.server")
+
+
+class InvitationSettingIn(BaseModel):
+    value: str = Field(max_length=2048)
 
 
 def _ensure_admin_logging() -> None:
@@ -67,8 +74,8 @@ _ensure_admin_logging()
 
 # 可选内嵌独立网关 converter：把它挂到 /gw 前缀下，实现「单端口单进程」部署。
 # converter 用本机桌面登录态直连后端，并额外提供 /v1/responses、/v1/messages（Anthropic）、
-# /v1/balance 等协议；与管理后台自带的 /v1/chat/completions、/v1/models（带 Key 配额托管）
-# 路径互不冲突。缺依赖时自动降级为只跑管理后台。
+# /v1/balance、/user/balance（DeepSeek 兼容）等协议；与管理后台自带的
+# /v1/chat/completions、/v1/models（带 Key 配额托管）路径互不冲突。缺依赖时自动降级为只跑管理后台。
 try:
     if os.getenv("WORKBUDDY_ANDROID") == "1":
         raise ImportError("Android uses the account-pool /v1 gateway")
@@ -80,12 +87,28 @@ except Exception:  # pragma: no cover - 降级分支
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+#: 文档路由常挂、由中间件实时门禁（后台「运行配置」切换 ENABLE_DOCS
+#: 即时生效）。默认关闭 —— 关闭时对外表现与不挂路由完全一致（404）。
+_DOCS_PATHS = {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json",
+               "/gw/docs", "/gw/redoc", "/gw/openapi.json"}
+
 app = FastAPI(title="WorkBuddy 共享管理后台", version="1.0",
-              # 文档默认关闭：它对攻击者等于一份现成的完整攻击面清单。
-              # 需要时用 ADMIN_ENABLE_DOCS=1 打开。
-              docs_url="/docs" if settings.ENABLE_DOCS else None,
-              redoc_url="/redoc" if settings.ENABLE_DOCS else None,
-              openapi_url="/openapi.json" if settings.ENABLE_DOCS else None)
+              docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
+
+@app.get("/api/settings/invitation")
+def get_invitation_setting(_: bool = Depends(require_admin), db=Depends(get_db)):
+    from admin.invitation import current
+    return current(db)
+
+
+@app.put("/api/settings/invitation")
+def put_invitation_setting(body: InvitationSettingIn, _: bool = Depends(require_admin), db=Depends(get_db)):
+    from admin.invitation import save
+    try:
+        return save(body.value, db)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
 
 # CORS：共享网关以 Authorization 头鉴权、不使用 Cookie，故关闭 credentials；
 # 避免 `allow_origins=["*"] + allow_credentials=True` 的危险组合。
@@ -101,6 +124,8 @@ app.add_middleware(
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
     """统一安全响应头：防点击劫持 / MIME 嗅探 / 敏感头泄露。"""
+    if request.url.path in _DOCS_PATHS and not settings.ENABLE_DOCS:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -110,10 +135,28 @@ async def _security_headers(request: Request, call_next):
     return response
 
 
-app.add_middleware(GatewayAdmissionMiddleware, wait_timeout=getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 180))
+app.add_middleware(
+    GatewayAdmissionMiddleware,
+    wait_timeout=getattr(settings, 'GATEWAY_WAIT_TIMEOUT', 15),
+    request_timeout=getattr(settings, 'GATEWAY_REQUEST_TIMEOUT', 160),
+    dynamic_settings=True,
+)
+from admin.join_limits import JoinAdmissionMiddleware
+app.add_middleware(JoinAdmissionMiddleware, max_active=settings.JOIN_MAX_CONCURRENT)
 
 from admin.request_metrics import TimingMiddleware
 app.add_middleware(TimingMiddleware, persist=True)
+app.add_middleware(IPBlockMiddleware)
+
+
+@app.on_event("shutdown")
+async def _flush_ip_activity():
+    import asyncio
+    from admin import ip_activity
+    if ip_activity._task is not None and not ip_activity._task.done():
+        ip_activity._task.cancel()
+        await asyncio.gather(ip_activity._task, return_exceptions=True)
+    await asyncio.to_thread(ip_activity.flush)
 
 
 @app.on_event("startup")
@@ -122,6 +165,16 @@ async def _start_upstream_connections():
     if os.getenv("WORKBUDDY_ANDROID") == "1":
         from admin import upstream_http
         await upstream_http.start(app, proxy.HTTP_LIMITS)
+    # 套用「设置 → 运行配置」里保存的覆盖值（exe/apk 无 .env，全靠这）。
+    try:
+        from admin.db import SessionLocal
+        from admin.runtime_settings import apply_overrides
+        with SessionLocal() as db:
+            applied = apply_overrides(db)
+        if applied:
+            logging.getLogger("admin.server").info("运行配置已套用 %d 项覆盖", applied)
+    except Exception as exc:  # 库表尚未初始化等情况不影响启动
+        logging.getLogger("admin.server").warning("运行配置套用失败：%s", exc)
 
 
 @app.on_event("shutdown")
@@ -138,6 +191,7 @@ app.include_router(keys.router)
 app.include_router(models.router)
 app.include_router(proxy.router)
 app.include_router(audio.router)
+app.include_router(images.router)
 app.include_router(sync.router)
 app.include_router(schedules.router)
 app.include_router(logs.router)
@@ -145,9 +199,11 @@ app.include_router(groups.router)
 app.include_router(stats.router)
 app.include_router(credits.router)
 app.include_router(maintenance.router)
+from admin.routers import runtime_config
+app.include_router(runtime_config.router)
 app.include_router(growth.router)
 app.include_router(growth_center.router)
-app.include_router(benefits.router)
+app.include_router(ip_management.router)
 from admin.routers import client_profile
 app.include_router(client_profile.router)
 if os.getenv("WORKBUDDY_ANDROID") != "1":
@@ -173,19 +229,6 @@ def _startup():
         wb_login.start_gc_thread()
     except Exception:
         logger.exception("手机号登录会话回收线程启动失败（不影响其它功能）")
-
-    # 预热 Turing Shield 设备指纹 token（X-Device-Token）。
-    # 不预热的话，第一个请求会拿到 None（后台线程还没算完），
-    # 被上游判为「非官方客户端」→ 11128，还会触发负缓存，后续 5 分钟全部失败。
-    try:
-        from admin.turing_token import get_device_token
-        tok = get_device_token(force=True)
-        if tok:
-            logger.info("Turing 设备指纹预热成功（X-Device-Token 就绪）")
-        else:
-            logger.warning("Turing 设备指纹预热失败，X-Device-Token 为空")
-    except Exception:
-        logger.warning("Turing 设备指纹预热异常（不影响其它功能）")
 
     # 未配置登录凭据时给出醒目告警：此时后台登录一律 503，不会退化成空口令
     if not settings.ADMIN_USERNAME or not settings.ADMIN_PASSWORD:
@@ -269,14 +312,6 @@ def _startup():
         except Exception:
             logger.exception("恢复登录后自动任务失败（不影响服务启动）")
 
-    # 预热设备风控 token：桌面端不存在时也会填上负缓存，
-    # 避免每个请求都在事件循环里同步 fork 一次 node 造成阻塞。
-    try:
-        from admin.turing_token import warmup
-        warmup()
-    except Exception:
-        pass
-
 
 def _get_stored_hash() -> str:
     """读取密码哈希；显式配置 ADMIN_PASSWORD 时以 env 为准并同步数据库。
@@ -329,21 +364,31 @@ def _get_stored_hash() -> str:
     return h
 
 
+def _login_fingerprint(request) -> str | None:
+    """汇总客户端上报的设备/浏览器指纹，作为登录限流的第三维度。
+
+    指纹由客户端自报、可伪造，所以**只收紧不放松**：带着同一组指纹的
+    爆破（哪怕换了 IP）会被这本账拦住；不报指纹则该维度直接不参与，
+    不影响其余两个维度的判定。格式不合法的头一律忽略。
+    """
+    from admin.client_identity import request_identities
+    parts = [value for _kind, _digest, value in request_identities(request)]
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8", "replace")).hexdigest()[:24] if parts else None
+
+
 @app.post("/api/login")
 def login(
     username: str = Form(...),
     password: str = Form(...),
     request: Request = None,
 ):
-    # 登录锁定必须用**不可伪造**的来源 IP：X-Forwarded-For 由 nginx 以
-    # `$proxy_add_x_forwarded_for` 追加，客户端自带的假值会排在首位，
-    # 取首段就能靠换 IP 绕过锁定（安全审计第 6 条）。
-    ip = get_trusted_client_ip(
-        request.headers.get("X-Real-IP") if request else None,
-        request.headers.get("X-Forwarded-For") if request else None,
-        request.client.host if request and request.client else None,
-    )
-    locked, wait = is_locked(ip)
+    # 权威 IP：仅当直连对端在 ADMIN_TRUSTED_PROXY_IPS 内时才采信反代头的
+    # X-Real-IP / X-Forwarded-For（nginx 侧须 proxy_set_header X-Real-IP
+    # $remote_addr 覆写）。否则所有请求看起来都是反代 IP，登录锁会退化成
+    # 「全局锁」，任何人打几次错误密码就能把真管理员锁在门外。
+    ip = client_ip_from_request(request)
+    fingerprint = _login_fingerprint(request) if request else None
+    locked, wait = is_locked(ip, username, fingerprint)
     if locked:
         raise HTTPException(
             status_code=429,
@@ -357,11 +402,37 @@ def login(
             detail="后台未配置登录凭据，请在 .env 中设置 ADMIN_USERNAME 与 ADMIN_PASSWORD 后重启",
         )
     if username != settings.ADMIN_USERNAME or not verify_password(password, _get_stored_hash()):
-        record_failure(ip)
+        # 三个维度各自计数：成对键锁「这个 IP × 这个用户名」，
+        # IP 全局键兜住换用户名撒网，指纹键兜住换 IP 共用指纹。
+        record_failure(ip, username, fingerprint)
+        logger.warning("后台登录失败 ip=%s username=%s fp=%s", ip, username[:40], fingerprint or "-")
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    # 仅用户名正确且密码正确才清空失败计数（避免可被探测用户名是否存在）
-    clear_failures(ip)
-    return {"token": create_admin_token()}
+    # 密码正确：清空成对与 IP 全局计数（指纹维度也一并清，避免误伤后续正常登录）。
+    clear_failures(ip, username, fingerprint)
+    logger.info("后台登录成功 ip=%s fp=%s", ip, fingerprint or "-")
+    token = create_admin_token()
+    # 会话 Cookie：让浏览器后续的 /admin 文档请求能通过门禁拿到完整控制台。
+    # （API 调用仍走 X-Admin-Token；Cookie 只服务于页面下发，HttpOnly 不可被 JS 读取。）
+    response = JSONResponse({"token": token})
+    response.set_cookie(**_admin_cookie_params(request, settings.JWT_EXPIRE_HOURS * 3600), value=token)
+    return response
+
+
+@app.post("/api/login/logout")
+def login_logout(request: Request):
+    """退出登录：清会话 Cookie（幂等，无需鉴权）。"""
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(_ADMIN_COOKIE, path="/")
+    return response
+
+
+@app.get("/api/login/session")
+def login_session(request: Request, _: bool = Depends(require_admin)):
+    """用有效的 X-Admin-Token 换取/续期会话 Cookie（登录壳升级用）。"""
+    token = request.headers.get("X-Admin-Token") or ""
+    response = JSONResponse({"ok": True})
+    response.set_cookie(**_admin_cookie_params(request, settings.JWT_EXPIRE_HOURS * 3600), value=token)
+    return response
 
 
 class PasswordChangeIn(BaseModel):
@@ -393,10 +464,60 @@ def index_redirect():
     return RedirectResponse(url="/admin")
 
 
+CONSOLE_DIR = Path(__file__).resolve().parent / "console"
+#: 会话 Cookie 名。控制台本体在 admin/console/（**不经** /static 暴露），
+#: 只有携带有效会话 Cookie 的请求才能拿到 —— 未登录的访客只会看到
+#: static/login.html 这个中性壳页，HTML 源码里不再出现任何产品与内部实现信息。
+_ADMIN_COOKIE = "admin_session"
+
+
+def _local_runtime() -> bool:
+    return (os.getenv("WORKBUDDY_DESKTOP") == "1"
+            or os.getenv("WORKBUDDY_ANDROID") == "1")
+
+
+def _console_allowed(request: Request) -> bool:
+    """是否向该请求下发完整控制台：本地运行时，或带有效会话 Cookie。"""
+    if _local_runtime():
+        return True
+    from admin.security import verify_admin_token
+    try:
+        verify_admin_token(request.cookies.get(_ADMIN_COOKIE))
+        return True
+    except Exception:
+        return False
+
+
+def _admin_cookie_params(request: Request, max_age: int):
+    https = (request.url.scheme == "https"
+             or request.headers.get("x-forwarded-proto") == "https")
+    return dict(key=_ADMIN_COOKIE, httponly=True, samesite="lax",
+                secure=https, path="/", max_age=max_age)
+
+
 @app.get("/admin")
 @app.get("/admin/")
-def admin_index():
-    return FileResponse(STATIC_DIR / "index.html")
+def admin_index(request: Request):
+    """登录门禁：有会话 Cookie → 完整控制台；否则只给中性登录壳。"""
+    if _console_allowed(request):
+        index = CONSOLE_DIR / "index.html"
+        # 兼容旧打包布局（控制台仍在 static/ 的桌面/移动端产物）。
+        if not index.is_file() and (STATIC_DIR / "index.html").is_file():
+            return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(index)
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.get("/admin/assets/{file_path:path}")
+def console_asset(file_path: str, request: Request):
+    """控制台私有静态资源（admin/console/*）。无会话一律 404，不暴露存在性。"""
+    if not _console_allowed(request):
+        raise HTTPException(status_code=404)
+    root = CONSOLE_DIR.resolve()
+    target = (root / file_path).resolve()
+    if not str(target).startswith(str(root) + os.sep) or not target.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(target)
 
 
 @app.get("/join")

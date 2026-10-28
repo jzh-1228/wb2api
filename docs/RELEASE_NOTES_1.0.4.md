@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.0.4 更新公告
+# wb2api 1.0.4 更新公告
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 本次更新新增每日权益检查领取和 DeepSeek 补偿一键领取，优化账号池批量刷新、执行进度和重复点击保护。
 
@@ -16,8 +18,8 @@
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | `WorkBuddy2API-1.0.4-windows-x64.exe` |
-| Android ARM64（Android 7.0 及以上） | `WorkBuddy2API-1.0.4-android-arm64.apk` |
+| Windows x64 | `***-1.0.4-windows-x64.exe` |
+| Android ARM64（Android 7.0 及以上） | `***-1.0.4-android-arm64.apk` |
 
 Windows 使用新版 EXE；安卓使用同签名 APK 覆盖安装，保留账号和配置。两个安装包均附带 `.sha256` 校验文件。
 

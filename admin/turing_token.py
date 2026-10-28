@@ -1,7 +1,8 @@
 """X-Device-Token 提供器（Python 侧）。
 
 复用本机 WorkBuddy 桌面端自带的 Turing Shield SDK（原生模块）取得设备风控 Token，
-供 workbuddy2api 的全部后端请求注入 `X-Device-Token` 头，避免被上游风控识别为异常客户端。
+仅供本机诊断使用。普通网关请求不会把服务器进程生成的 Token 注入上游，避免把
+服务器环境误报成桌面客户端。
 
 实现：调用项目根目录的 `turing_helper.js`（Node 脚本），该脚本 require 桌面端的
 TuringShieldSDK 原生桥接并返回 token。token 带进程内缓存（默认 10 分钟），避免每次
@@ -12,8 +13,7 @@ TuringShieldSDK 原生桥接并返回 token。token 带进程内缓存（默认 
 
 性能约定（重要）
 ----------------
-`get_device_token()` 会在**请求处理路径**上被同步调用（converter 构造上游请求头时）。
-因此这里的每一次 `subprocess.run` 都会阻塞事件循环，必须严格限制：
+诊断页可能调用 `get_device_token()`；它不在模型请求路径上。每次调用仍必须严格限制：
 
   * 成功结果缓存 600s（`_CACHE_TTL`）；
   * **失败结果也做负缓存**（`_FAIL_TTL`）—— 这是曾经的线上问题：Linux 服务器上没有
@@ -178,3 +178,27 @@ def clear_cache() -> None:
         _cache["token"] = None
         _cache["ts"] = 0.0
         _cache["fail_ts"] = 0.0
+
+
+def status() -> dict:
+    """Return non-secret availability information for diagnostics.
+
+    The token itself is deliberately never returned.  This lets the admin
+    console distinguish a real native SDK token from a server-side fallback
+    without making the credential or its cache contents editable.
+    """
+    now = time.time()
+    with _lock:
+        token_ts = float(_cache.get("ts") or 0.0)
+        fail_ts = float(_cache.get("fail_ts") or 0.0)
+        has_token = bool(_cache.get("token")) and now - token_ts < _CACHE_TTL
+        failure_cached = bool(fail_ts) and now - fail_ts < _FAIL_TTL
+    node = _node_bin()
+    return {
+        "available": has_token,
+        "source": "native_sdk" if has_token else "unavailable",
+        "checked": bool(token_ts or fail_ts),
+        "node_available": bool(node),
+        "helper_available": _HELPER.is_file(),
+        "cached_failure": failure_cached,
+    }

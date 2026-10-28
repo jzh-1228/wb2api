@@ -136,7 +136,7 @@ def start(directory: str, progress=None) -> str:
             sock.listen(128)
             server = MobileServer(uvicorn.Config(app, host="0.0.0.0", port=port, log_config=None,
                                     access_log=False, loop="asyncio", http=MobileH11Protocol, ws="none",
-                                    timeout_graceful_shutdown=5))
+                                    proxy_headers=False, timeout_graceful_shutdown=5))
             server.config.mobile_runtime = progress
             _server = server
             startup_failure = []

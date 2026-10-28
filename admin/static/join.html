@@ -4,20 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <meta name="robots" content="noindex, nofollow" />
-<title>WorkBuddy 注册</title>
-<!--
-  公开注册页（复刻 WorkBuddy 手机号登录）
+<title>wb2api 注册</title>
 
-  设计取向：**越简单越好**。
-    * 不需要口令、不需要邀请码 —— 地址发给谁，谁就能用；
-    * 不需要安装任何客户端，手机浏览器即可完成（服务端代跑完整授权）；
-    * 全流程只有「输手机号 → 填验证码」两步，没有多余字段与选项；
-    * 面向用户只说「注册 / 登录」，**不出现「上传凭证」这类内部实现措辞** ——
-      用户看到「上传」会以为自己手机号被偷偷传走了。
-
-  技术形态：移动端优先；不依赖任何外部 CDN（样式全内联，图标用内联 SVG），
-  因为分享出去的页面无法保证对方的网络能加载到外部资源。
--->
 <style>
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   :root{
@@ -93,9 +81,6 @@
     animation:sp .7s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
 
-  /* 轻提示（替代浏览器原生 alert）
-     —— 原生 alert 会阻塞页面、样式不可控、在手机上还带一串站点域名，
-     既难看又像钓鱼页。这里用页内浮层，风格与卡片一致。 */
   .toast-wrap{position:fixed;left:0;right:0;top:16px;z-index:99;
     display:flex;flex-direction:column;align-items:center;gap:8px;
     pointer-events:none;padding:0 16px}
@@ -111,18 +96,11 @@
   @keyframes tin{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
   @keyframes tout{to{opacity:0;transform:translateY(-8px)}}
 
-  /* 字段级错误：贴着输入框显示，比浮层更精准 */
   .ferr{color:#e54545;font-size:12px;margin-top:6px;display:none}
   .ferr.show{display:block}
   .field.bad{border-color:#e54545}
   .field.bad:focus-within{box-shadow:0 0 0 3px rgba(229,69,69,.12)}
 
-  /* 官方页面接力：新窗口完成验证（**不能用 iframe**）
-     —— 实测：入口页 /login/ 没有 frame 限制，但用户点登录后会跳到
-     Keycloak 的 /auth/realms/...，那里带 `X-Frame-Options: SAMEORIGIN`
-     与 `frame-ancestors 'self'`，iframe 会被浏览器直接拦掉；
-     而且 Keycloak 那一步依赖它自己的会话 Cookie，跨站 iframe 也带不过去。
-     所以改成顶层新窗口：由用户浏览器走完整链路，服务端只轮询结果。 */
   .vbox{display:flex;gap:12px;align-items:flex-start;background:#f7f9fb;
     border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
   .vbox .vico{flex:0 0 auto;width:34px;height:34px;border-radius:9px;
@@ -144,10 +122,9 @@
     <span class="mark">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 6.5 3.6-2.06 1.15L12 6.6 7.56 9.05 5.5 7.9 12 4.3zM5 9.6l2 1.12v4.56l-2-1.11V9.6zm4 2.24 3 1.67 3-1.67v3.12l-3 1.67-3-1.67v-3.12zm8-2.24v4.57l-2 1.11V10.7l2-1.1z"/></svg>
     </span>
-    <span class="name">WorkBuddy</span>
+    <span class="name">wb2api</span>
   </div>
 
-  <!-- ============ 步骤 1：手机号 ============ -->
   <div id="step1">
     <h1>手机号注册</h1>
     <div class="sub">输入手机号，获取短信验证码即可完成注册</div>
@@ -171,7 +148,6 @@
     <div class="alt"><a href="javascript:void(0)" id="officialLink">使用官方手机号验证登录</a></div>
   </div>
 
-  <!-- ============ 步骤 2：验证码 ============ -->
   <div id="step2" class="hidden">
     <h1>输入验证码</h1>
     <div class="sub" id="sentTo">验证码已发送</div>
@@ -192,7 +168,6 @@
     <div class="note">验证码仅用于本次登录验证，不会用于其他用途。</div>
   </div>
 
-  <!-- ============ 步骤 3：结果 ============ -->
   <div id="step3" class="hidden">
     <div class="result">
       <div class="icon ok" id="resIcon"></div>
@@ -203,17 +178,6 @@
     <button id="againBtn" class="btn ghost hidden" style="margin-top:18px">返回</button>
   </div>
 
-  <!-- ============ 步骤 3b：等待用户在官方页面完成验证 ============
-       当上游要求图形验证码（按号风控）时，纯协议走不下去。
-
-       ⚠️ 不能用 iframe：入口页 /login/ 确实没有 frame 限制，但点登录后会跳到
-       Keycloak 的 /auth/realms/...，那里有 `X-Frame-Options: SAMEORIGIN` 和
-       `frame-ancestors 'self'`，iframe 会被浏览器拦掉（实测报错就是这条）。
-       而且 Keycloak 依赖自己的会话 Cookie，跨站 iframe 也带不过去。
-
-       用**顶层新窗口**打开官方页面：用户在那里正常完成（验证码归腾讯处理），
-       服务端并行轮询 auth/token（该端点不需要 cookie，已实测），
-       拿到凭证后自动继续。全程不需要客户端。 -->
   <div id="stepOfficial" class="hidden">
     <h1>请完成手机号验证</h1>
     <div class="sub">在打开的页面里用手机号登录，完成后这里会自动显示结果</div>
@@ -305,7 +269,6 @@
     });
   }
 
-  /* 从后端错误里抽出人话（FastAPI 的 detail 可能是字符串或 {message}） */
   function msgOf(data) {
     var d = data && data.detail;
     if (!d) return "操作失败，请稍后重试";
@@ -313,7 +276,6 @@
     return d.message || "操作失败，请稍后重试";
   }
 
-  /* ---------- 轻提示 / 字段错误（替代浏览器原生 alert） ---------- */
   var TOAST_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="#ff8a8a" stroke-width="2.2" ' +
     'stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/>' +
@@ -327,7 +289,7 @@
     el.innerHTML = TOAST_ICON + "<span></span>";
     el.lastChild.textContent = String(msg == null ? "" : msg);
     wrap.appendChild(el);
-    // 最多同时显示 3 条，避免堆满屏幕
+
     while (wrap.children.length > 3) wrap.removeChild(wrap.firstChild);
     setTimeout(function () {
       el.classList.add("out");
@@ -335,7 +297,6 @@
     }, ms || 2600);
   }
 
-  /* 字段级错误：贴在输入框下方，并在用户重新输入时自动清除 */
   function fieldErr(which, msg) {
     var box = $(which + "Field"), tip = $(which + "Err");
     if (!box || !tip) { toast(msg); return; }
@@ -352,20 +313,6 @@
   }
   function clearAllFieldErr() { clearFieldErr("mobile"); clearFieldErr("code"); }
 
-  /* ---------- 官方页面接力（图形验证码兜底） ----------
-     触发时机：上游回 need_captcha（按号风控）。
-     做法：**新窗口**打开官方登录页，用户在那里完成验证码（腾讯自己处理），
-           服务端并行轮询 auth/token（该端点不需要 cookie，已实测），
-           换到凭证后自动完成注册。
-
-     为什么不用 iframe（实测结论，别再改回去）：
-       入口页 https://www.workbuddy.cn/login/ 确实没有 frame 限制，
-       但用户点登录后会跳到 Keycloak 的 /auth/realms/...，那里有
-       `X-Frame-Options: SAMEORIGIN` + `frame-ancestors 'self'`，
-       浏览器会直接拒绝渲染（控制台报 "Blocked a frame ... frame-ancestors 'self'"）。
-       而且 Keycloak 依赖它自己下发的会话 Cookie，跨站 iframe 也带不过去。
-       新窗口是顶层浏览上下文，没有这些限制，且不需要客户端：
-       凭证是靠 state 从服务端轮询换的，不走 workbuddy:// 回调。 */
   var offTimer = null, offSid = "", offDeadline = 0, offUrl = "", offWin = null;
 
   function officialStop() {
@@ -374,17 +321,11 @@
 
   function officialBeginPoll() {
     if (offTimer || !offSid) return;
-    offDeadline = Date.now() + 6 * 60 * 1000;   // 6 分钟够慢吞吞地过验证码
+    offDeadline = Date.now() + 6 * 60 * 1000;
     offTimer = setInterval(officialPoll, 2500);
     officialPoll();
   }
 
-  /* 打开官方页面。返回是否成功打开。
-
-     ⚠️ 弹窗拦截：`window.open` 只有落在**用户手势的同步调用栈里**才稳。
-     但我们需要先向后端要 auth_url（异步），那时手势已经"过期"了。
-     标准解法：**先同步开一个空白窗口占位**，等 URL 回来再改它的 location。
-     这样用户点一次就能开出来，不用被拦一次再点第二次。 */
   function officialOpen(preOpened) {
     if (!offUrl) return false;
     offWin = preOpened || null;
@@ -417,8 +358,7 @@
       $("officialErr").textContent = "";
       $("officialErr").classList.remove("show");
     }
-    // 同步占位窗口：此刻仍在用户手势的调用栈里，不会被拦。
-    // （官方页面的最终 URL 需要异步去取，但窗口可以先开出来。）
+
     var placeholder = null;
     try { placeholder = window.open("about:blank", "_blank"); } catch (e) { placeholder = null; }
 
@@ -452,9 +392,7 @@
       if (!r.ok) throw { data: r.data };
       if (r.data && r.data.done) {
         officialStop();
-        // 关键：用户此刻**正在看那个新窗口**，所以先把结果送到那里 ——
-        // 否则他完成验证后停在腾讯的页面上，以为没成功（这就是你反馈的问题）。
-        // 实测腾讯各页都没有 COOP 头，所以我们仍持有该窗口的引用，可以导航它。
+
         handOffToPopup(r.data);
         ok(r.data);
       }
@@ -466,27 +404,22 @@
     });
   }
 
-  /* 把「成功」送到用户正在看的那个窗口。
-     做法：把它导航到我们自己的成功页（同源，允许导航）。
-     同时用 localStorage 记一份 —— 用户刷新、或原标签页被关掉后再打开，
-     也还能看到「注册成功」，不会以为白做了。 */
   function handOffToPopup(data) {
     var masked = (data && data.masked) || "";
     try {
       localStorage.setItem("wb_join_done", JSON.stringify({
-        t: Date.now(), masked: masked
+        t: Date.now(), masked: masked, invitation: data.invitation
       }));
-    } catch (e) { /* 隐私模式忽略 */ }
+    } catch (e) {  }
     if (!offWin || offWin.closed) return;
     try {
-      offWin.location.replace("/join?done=1&m=" + encodeURIComponent(masked));
+      offWin.location.replace("/join?done=1&m=" + encodeURIComponent(masked) +
+        "&invitation=" + encodeURIComponent(data.invitation && data.invitation.status !== 'disabled' ? data.invitation.message : ''));
     } catch (e) {
-      // 跨域被拒（理论上没有 COOP 不该发生）-> 退回到只提示，不报错
+
     }
   }
 
-  /* 页面带 ?done=1 打开时（即被上面导航过来的那个新窗口），
-     直接显示成功页，不再显示注册表单。 */
   function showDoneFromUrl() {
     var q;
     try { q = new URLSearchParams(location.search); } catch (e) { return false; }
@@ -499,6 +432,10 @@
       $("resDesc").innerHTML = masked
         ? "欢迎，" + "<b>" + esc(masked) + "</b>"
         : "欢迎使用";
+      if (q.get('invitation')) {
+        $("resDesc").appendChild(document.createElement('br'));
+        $("resDesc").appendChild(document.createTextNode(q.get('invitation')));
+      }
       $("resHint").textContent = "可以关闭本页面了。";
       $("againBtn").classList.add("hidden");
       show("step3");
@@ -506,8 +443,6 @@
     return true;
   }
 
-  /* 刷新/重开时恢复「刚成功」的结果（10 分钟内有效）。
-     避免用户以为要重新注册一遍。 */
   function restoreDone() {
     var raw;
     try { raw = localStorage.getItem("wb_join_done"); } catch (e) { return false; }
@@ -525,6 +460,10 @@
       $("resDesc").innerHTML = d.masked
         ? "欢迎，" + "<b>" + esc(d.masked) + "</b>"
         : "欢迎使用";
+      if (d.invitation && d.invitation.status !== 'disabled') {
+        $("resDesc").appendChild(document.createElement('br'));
+        $("resDesc").appendChild(document.createTextNode(d.invitation.message));
+      }
       $("resHint").textContent = "";
       $("againBtn").classList.remove("hidden");
       show("step3");
@@ -555,7 +494,6 @@
     savePhone();
   }
 
-  /* 第一步：建会话 + 发码 */
   function send() {
     if (busy || Date.now() < retryUntil) return;
     clearAllFieldErr();
@@ -571,7 +509,6 @@
     btn.disabled = true;
     btn.innerHTML = '<span class="spin"></span>发送中…';
 
-    // 已有会话就直接发码；没有（或已失效）才新建 —— 少一次往返。
     var ensure = sid ? Promise.resolve({ ok: true }) : api("/api/join/start", {});
     ensure.then(function (s) {
       if (!s.ok) throw { data: s.data };
@@ -581,7 +518,7 @@
     }).then(function (r) {
       if (!r.ok) {
         countdown(r.retryAfter || 60);
-        // 会话过期：清掉，下次点击自动重开
+
         if (r.data && r.data.detail && r.data.detail.step === "session") sid = "";
         throw { data: r.data };
       }
@@ -594,14 +531,12 @@
       var step = d && d.detail && d.detail.step;
       var reason = d && d.detail && d.detail.reason;
       var msg = msgOf(d);
-      // 上游要求图形验证码（按号风控）-> 自动切到「官方页面接力」，
-      // 让用户在腾讯自己的页面上过验证码 —— 而不是丢一句报错把人堵死。
-      // 判据用机器可读的 reason，不匹配中文文案（改文案不会让功能失效）。
+
       if (reason === "need_captcha") {
         officialStart();
         return;
       }
-      // 手机号本身的问题（格式等）-> 贴着输入框提示，并回到第一步
+
       if (step === "mobile" || step === "sms_send") {
         show("step1");
         fieldErr("mobile", msg);
@@ -615,7 +550,6 @@
     });
   }
 
-  /* 第二步：验证码 → 注册 */
   function verify() {
     if (busy) return;
     clearFieldErr("code");
@@ -658,13 +592,16 @@
     WBPhone.clear('wb_join_phone'); sid = '';
     $("resIcon").className = "icon ok";
     $("resIcon").innerHTML = OK_ICON;
-    // 一律说「注册成功」：重复注册对用户来说也只是「又登了一次」，
-    // 没必要暴露内部「这个号早就在库里」的实现细节。
+
     $("resTitle").textContent = "注册成功";
     $("resDesc").innerHTML = data.masked
       ? "欢迎，" + "<b>" + esc(data.masked) + "</b>"
       : "欢迎使用";
-    // 若用户还开着那个官方验证窗口，告诉他可以关了
+    if (data.invitation && data.invitation.status !== 'disabled') {
+      $("resDesc").appendChild(document.createElement('br'));
+      $("resDesc").appendChild(document.createTextNode(data.invitation.message));
+    }
+
     if (offWin && !offWin.closed) {
       $("resHint").textContent = "验证页面可以关闭了。";
     } else {
@@ -695,7 +632,6 @@
     officialStop();
     sid = ""; offSid = ""; offUrl = "";
     offWin = null;
-    // 清掉「刚成功」标记，否则刷新后又会跳回成功页，没法再注册下一个号
     try { localStorage.removeItem("wb_join_done"); } catch (e) {}
     $("mobile").value = ""; $("code").value = "";
     clearAllFieldErr();
@@ -718,23 +654,17 @@
   $("officialOpenBtn").addEventListener("click", function () { officialOpen(null); });
   $("officialBack").addEventListener("click", function () { officialStop(); show("step1"); });
 
-  // 回车即下一步（手机上尤其顺手）
   $("mobile").addEventListener("keydown", function (e) { if (e.key === "Enter") send(); });
   $("code").addEventListener("keydown", function (e) { if (e.key === "Enter") verify(); });
 
-  // 输入即过滤非数字，避免用户粘贴带空格/横线的号码
   ["mobile", "code"].forEach(function (id) {
     $(id).addEventListener("input", function () {
       this.value = this.value.replace(/\D/g, "");
-      clearFieldErr(id);      // 用户一改就撤掉红色提示，别让它一直挂着
+      clearFieldErr(id);
       if (id === 'mobile') savePhone();
     });
   });
 
-  // 首屏状态：
-  //   1) ?done=1  -> 被「成功接力」导航过来的那个新窗口，直接显示成功页
-  //   2) 否则若 10 分钟内刚成功过 -> 恢复成功页（刷新/重开也能看到）
-  //   3) 都没有 -> 正常显示注册表单
   if (!showDoneFromUrl()) {
     if (!restoreDone()) restorePhone();
   }

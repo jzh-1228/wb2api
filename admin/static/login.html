@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="color-scheme" content="only light" />
+<title>wb2api 管理后台</title>
+<style>
+  :root{color-scheme:only light}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{
+    position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    color:#1a1a1a;-webkit-font-smoothing:antialiased;overflow:hidden;
+    background:linear-gradient(180deg,#ffffff 0%,#f2fcfa 45%,#f7f8f9 100%);
+  }
+  #rain{position:absolute;inset:0;z-index:0;width:100%;height:100%;pointer-events:none}
+  .card{
+    position:relative;z-index:1;width:100%;max-width:400px;background:#fff;
+    border-radius:18px;padding:38px 34px 30px;
+    box-shadow:0 1px 2px rgba(15,23,42,.03),0 18px 44px rgba(15,23,42,.07);
+    animation:cardIn .38s cubic-bezier(.2,.7,.3,1) both;
+  }
+  @keyframes cardIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+  .head{text-align:center;margin-bottom:26px}
+  .logo{width:56px;height:56px;margin:0 auto}
+  .logo svg{width:100%;height:100%;display:block;filter:drop-shadow(0 8px 20px rgba(1,200,134,.26))}
+  h1{font-size:21px;font-weight:700;margin:16px 0 5px;letter-spacing:-.01em}
+  .sub{font-size:12.5px;color:rgba(0,0,0,.45);margin:0}
+  input{width:100%;height:44px;border:1px solid transparent;border-radius:10px;background:#f5f5f7;
+    color:#1a1a1a;font-size:14px;font-family:inherit;padding:0 14px;outline:0;margin-bottom:14px;
+    transition:box-shadow .18s,background .18s}
+  input::placeholder{color:rgba(0,0,0,.3)}
+  input:focus{background:#fff;box-shadow:0 0 0 3px rgba(0,146,115,.18),0 0 0 1px #009273}
+  button{position:relative;width:100%;height:50px;border:0;border-radius:14px;background:#000;color:#fff;
+    font-size:15px;font-weight:500;cursor:pointer;font-family:inherit;
+    display:flex;align-items:center;justify-content:center;gap:6px;
+    transition:transform .15s,opacity .15s;
+    box-shadow:0 1px 2px rgba(0,0,0,.12),0 8px 20px rgba(0,0,0,.14)}
+  button svg{width:15px;height:15px;flex-shrink:0;margin-top:-1px}
+  button:hover{transform:translateY(-1px);opacity:.92}
+  button:active{transform:translateY(0)}
+  button:disabled{opacity:.55;cursor:wait;transform:none}
+  .btn-label{display:inline-flex;align-items:center;gap:6px}
+  .btn-spin{display:none}
+  button.busy .btn-label{display:none}
+  button.busy .btn-spin{display:inline-flex;animation:rot 1s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .err{color:#e7000b;font-size:12.5px;min-height:18px;margin:12px 0 0;text-align:center;word-break:break-all}
+  .err.shake{animation:shake .4s}
+  @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<canvas id="rain" aria-hidden="true"></canvas>
+<div class="card">
+  <div id="form">
+    <div class="head">
+      <div class="logo" aria-hidden="true"><svg viewBox="0 0 256 256"><defs><linearGradient id="lg-bg" x2="1" y2="1"><stop stop-color="#42c08e"/><stop offset="1" stop-color="#148665"/></linearGradient><linearGradient id="lg-ink" x2="0" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#d6fff0"/></linearGradient></defs><rect x="8" y="8" width="240" height="240" rx="58" fill="url(#lg-bg)"/><path d="M55 81 28 128l27 47M201 81l27 47-27 47" fill="none" stroke="#d6fff0" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/><path d="m66 89 23 79 39-56 39 56 23-79" fill="none" stroke="url(#lg-ink)" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/><circle cx="128" cy="73" r="9" fill="#d6fff0"/></svg></div>
+      <h1>wb2api 管理后台</h1>
+      <p class="sub">多账号轮换 · API Key 网关 · 模型配置</p>
+    </div>
+    <input id="username" autocomplete="username" autocapitalize="none" placeholder="用户名" />
+    <input id="password" type="password" autocomplete="current-password" placeholder="密码" />
+    <button id="btn" type="button">
+      <span class="btn-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>登录</span>
+      <span class="btn-spin" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg></span>
+    </button>
+    <div class="err" id="err"></div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var TOKEN_KEY = "wb_admin_token";
+  var $ = function (id) { return document.getElementById(id); };
+
+  function startRain() {
+    var canvas = $("rain");
+    var host = document.body;
+    if (!canvas || !canvas.getContext) return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    var POOL = "import{gateway}from'wb2api';constpool=newGateway({accounts:27,models:12});awaitpool.chat(model,messages);exportdefaultasyncfunctionhandler(req,res){constkey=awaitauth(req);returnproxy(key,req.body);}";
+    var SEPS = [" ", " ", " ", " + ", " - ", " * ", " / ", " = ", " > ", " < ", " & ", " | "];
+    var CELL_W = 64, CELL_H = 14, MAX = 50;
+    var COLOR = "148, 251, 213";
+    var occupied = new Map(), parts = [];
+    var w = 0, h = 0, cols = 0, rows = 0, raf = 0, lastX = null, lastY = null;
+
+    function key(c, r) { return c + "," + r; }
+    function snippet() {
+      var start = Math.floor(Math.random() * (POOL.length - 4));
+      var len = Math.floor(Math.random() * 3) + 2;
+      var frag = POOL.slice(start, start + len);
+      var out = "";
+      for (var i = 0; i < frag.length; i++) {
+        out += frag[i];
+        if (i < frag.length - 1 && Math.random() < 0.25) out += SEPS[Math.floor(Math.random() * SEPS.length)];
+      }
+      return out;
+    }
+    function resize() {
+      var dpr = window.devicePixelRatio || 1;
+      w = host.clientWidth; h = host.clientHeight;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      canvas.style.width = w + "px"; canvas.style.height = h + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      cols = Math.max(1, Math.floor(w / CELL_W));
+      rows = Math.max(1, Math.floor(h / CELL_H));
+    }
+    function spawn(c, r) {
+      if (c < 0 || c >= cols || r < 0 || r >= rows) return;
+      var k = key(c, r);
+      if (occupied.has(k)) return;
+      var p = { c: c, r: r, text: snippet(), life: 0, maxLife: 1,
+                fade: Math.random() * 0.04 + 0.02, state: "in", hold: 0 };
+      occupied.set(k, p); parts.push(p);
+    }
+    function frame() {
+      ctx.clearRect(0, 0, w, h);
+      ctx.font = "bold 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      for (var i = parts.length - 1; i >= 0; i--) {
+        var p = parts[i];
+        ctx.fillStyle = "rgba(" + COLOR + ", " + p.life + ")";
+        ctx.fillText(p.text, p.c * CELL_W + CELL_W / 2, p.r * CELL_H + CELL_H / 2);
+        if (p.state === "in") {
+          p.life += p.fade;
+          if (p.life >= p.maxLife) { p.life = p.maxLife; p.state = "hold"; p.hold = Math.random() * 30 + 15; }
+        } else if (p.state === "hold") {
+          p.hold -= 1;
+          if (p.hold <= 0) p.state = "out";
+        } else {
+          p.life -= p.fade;
+          if (p.life <= 0) { occupied.delete(key(p.c, p.r)); parts.splice(i, 1); }
+        }
+      }
+      if (Math.random() < 0.1 && parts.length < MAX) {
+        spawn(Math.floor(Math.random() * cols), Math.floor(Math.random() * rows));
+      }
+      raf = requestAnimationFrame(frame);
+    }
+    function onMove(e) {
+      var c = Math.floor(e.clientX / CELL_W), r = Math.floor(e.clientY / CELL_H);
+      if (lastX === null || lastY === null) { lastX = e.clientX; lastY = e.clientY; return; }
+      var pc = Math.floor(lastX / CELL_W), pr = Math.floor(lastY / CELL_H);
+      if (c === pc && r === pr) return;
+      spawn(c, r);
+      if (Math.random() < 0.9) {
+        var DIRS = [[0,1],[1,0],[0,-1],[-1,0],[1,1],[-1,-1],[1,-1],[-1,1]];
+        var n = Math.floor(Math.random() * 3) + 2;
+        for (var i = 0; i < n; i++) {
+          var d = DIRS[Math.floor(Math.random() * DIRS.length)];
+          spawn(c + d[0], r + d[1]);
+        }
+      }
+      lastX = e.clientX; lastY = e.clientY;
+    }
+    function onLeave() { lastX = null; lastY = null; }
+    function onVis() {
+      if (document.hidden) { cancelAnimationFrame(raf); raf = 0; return; }
+      if (raf === 0) raf = requestAnimationFrame(frame);
+    }
+    resize();
+    raf = requestAnimationFrame(frame);
+    window.addEventListener("resize", resize);
+    document.addEventListener("visibilitychange", onVis);
+    host.addEventListener("mousemove", onMove);
+    host.addEventListener("mouseleave", onLeave);
+  }
+
+  function fingerprint() {
+    try {
+      var s = [navigator.userAgent, navigator.language, screen.width + "x" + screen.height,
+               (Intl.DateTimeFormat().resolvedOptions().timeZone || "")].join("|");
+      var a = 0x811c9dc5, b = 0x9e3779b9;
+      for (var i = 0; i < s.length; i++) {
+        var c = s.charCodeAt(i);
+        a = (Math.imul(a ^ c, 0x01000193)) >>> 0;
+        b = (Math.imul(b ^ ((c + i) & 0xffff), 0x85ebca6b)) >>> 0;
+      }
+      return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+    } catch (e) { return ""; }
+  }
+
+  function fail(msg) {
+    var err = $("err");
+    err.textContent = msg || "登录失败，请重试";
+    err.classList.remove("shake");
+    void err.offsetWidth;
+    err.classList.add("shake");
+  }
+
+  function login() {
+    var btn = $("btn"), err = $("err");
+    var username = $("username").value.trim();
+    var password = $("password").value;
+    if (!username || !password) { fail("请输入用户名和密码"); return; }
+    btn.disabled = true; btn.classList.add("busy"); err.textContent = "";
+    var body = new URLSearchParams({ username: username, password: password });
+    var headers = { "Content-Type": "application/x-www-form-urlencoded" };
+    var fp = fingerprint();
+    if (fp) headers["X-Browser-Fingerprint"] = fp;
+    fetch("/api/login", { method: "POST", body: body, headers: headers })
+      .then(function (r) {
+        return r.json().then(function (d) { return { status: r.status, data: d }; });
+      })
+      .then(function (res) {
+        if (res.status === 200 && res.data && res.data.token) {
+          localStorage.setItem(TOKEN_KEY, res.data.token);
+          location.replace("/admin");
+          return;
+        }
+        var msg = "登录失败";
+        var d = res.data && res.data.detail;
+        if (typeof d === "string" && d) msg = d;
+        else if (res.status === 401) msg = "用户名或密码错误";
+        fail(msg);
+      })
+      .catch(function () { fail("网络异常，请稍后重试"); })
+      .then(function () { btn.disabled = false; btn.classList.remove("busy"); });
+  }
+
+  $("btn").addEventListener("click", login);
+  $("password").addEventListener("keydown", function (e) { if (e.key === "Enter") login(); });
+  $("username").addEventListener("keydown", function (e) { if (e.key === "Enter") $("password").focus(); });
+  $("username").focus();
+  startRain();
+
+  var token = localStorage.getItem(TOKEN_KEY) || "";
+  if (token) {
+    fetch("/api/login/session", { headers: { "X-Admin-Token": token } })
+      .then(function (r) {
+        if (r.ok) { location.replace("/admin"); return; }
+        if (r.status === 401) { localStorage.removeItem(TOKEN_KEY); }
+      })
+      .catch(function () {});
+  }
+})();
+</script>
+</body>
+</html>

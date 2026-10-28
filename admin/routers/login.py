@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from admin import wb_login
 from admin.db import get_db
 from admin.models import Account
-from admin.ratelimit import get_client_ip
+from admin.ratelimit import client_ip_from_request
 from admin.security import require_admin
 
 _logger = logging.getLogger("admin.wb_login_router")
@@ -163,7 +163,9 @@ def _verify_and_store(sess, code: str, db: Session, account_id: Optional[int] = 
         result = wb_login.verify_sms(sess, code)
     except wb_login.WbLoginError as e:
         raise _fail(e, 502)
-    return _store_verified_credential(result["credential"], result["meta"] or {}, db, account_id=account_id)
+    out = _store_verified_credential(result["credential"], result["meta"] or {}, db, account_id=account_id)
+    out["invitation"] = wb_login.try_bind_invitation(sess, result["credential"])
+    return out
 
 
 def _store_verified_credential(credential: str, meta: dict, db: Session, account_id: Optional[int] = None) -> dict:
@@ -346,18 +348,18 @@ def login_start(_: bool = Depends(require_admin)):
     不涉及用户输入，所以前端进页面即可调用；返回的 `auth_url` 仅用于
     「手动授权」兜底展示，正常流程用不到。
     """
-    try:
-        sess = wb_login.start_login()
-    except wb_login.WbLoginError as e:
-        raise _fail(e, 502)
+    with _upstream_slot("login_start"):
+        try:
+            sess = wb_login.start_login()
+        except wb_login.WbLoginError as e:
+            raise _fail(e, 502)
     return {"sid": sess.sid, "auth_url": sess.plugin_auth_url}
 
 
 @router.post("/send")
 def login_send(body: SendIn, request: Request, _: bool = Depends(require_admin)):
     """第 2 步：给指定手机号发验证码。"""
-    ip = get_client_ip(request.headers.get("x-forwarded-for"), request.client.host
-                       if request.client else None)
+    ip = client_ip_from_request(request)
     return _send_guarded(body, ip)
 
 
@@ -366,7 +368,7 @@ def _send_guarded(body, ip):
     try:
         mobile = wb_login.normalize_mobile(body.mobile, body.country_code)
         sess = wb_login.get_session(body.sid)
-        with _upstream_slot("send"), sess.lock:
+        with _session_slot(sess, "send"), _upstream_slot("send"):
             if sess.consumed or sess.expired():
                 raise wb_login.WbLoginError("会话已失效", step="session")
             if sess.sms_state_token and (sess.mobile != mobile or sess.country_code != body.country_code.lstrip("+")):
@@ -407,7 +409,8 @@ def login_verify(
     except wb_login.WbLoginError as e:
         raise _fail(e, 502)
 
-    out = _verify_and_store(sess, body.code, db, account_id=body.account_id)
+    with _session_slot(sess, "verify"), _upstream_slot("verify"):
+        out = _verify_and_store(sess, body.code, db, account_id=body.account_id)
     return {
         "ok": True,
         "duplicated": out["duplicated"],
@@ -416,6 +419,7 @@ def login_verify(
         "check": {"live": out["live_ok"], "live_message": out["live_msg"],
                   "format": "ok"},
         "account": out["account"],
+        "invitation": out.get("invitation"),
     }
 
 
@@ -658,6 +662,41 @@ def _upstream_slot(reason: str):
     return _Ctx()
 
 
+def _session_slot(sess, reason: str):
+    """Claim one session operation without tying up a worker on its RLock."""
+    class _Ctx:
+        def __enter__(self_inner):
+            if not sess.lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": "该登录会话正在处理中，请稍后重试",
+                            "step": "busy", "reason": reason},
+                    headers={"Retry-After": "2"})
+            return self_inner
+
+        def __exit__(self_inner, *exc):
+            sess.lock.release()
+            return False
+
+    return _Ctx()
+
+
+def _try_session_slot(sess):
+    class _Ctx:
+        acquired = False
+
+        def __enter__(self_inner):
+            self_inner.acquired = sess.lock.acquire(blocking=False)
+            return self_inner.acquired
+
+        def __exit__(self_inner, *exc):
+            if self_inner.acquired:
+                sess.lock.release()
+            return False
+
+    return _Ctx()
+
+
 @public_router.post("/api/join/start")
 def join_start(body: JoinIn, request: Request):
     """公开：发起一次注册会话。"""
@@ -672,8 +711,7 @@ def join_start(body: JoinIn, request: Request):
 @public_router.post("/api/join/send")
 def join_send(body: JoinIn, request: Request):
     """公开：发短信验证码。"""
-    ip = get_client_ip(request.headers.get("x-forwarded-for"),
-                       request.client.host if request.client else None)
+    ip = client_ip_from_request(request)
     return _send_guarded(body, ip)
 
 
@@ -692,7 +730,8 @@ def join_verify(body: JoinIn, request: Request, db: Session = Depends(get_db)):
     except wb_login.WbLoginError as e:
         raise _fail(e, 502)
 
-    out = _verify_and_store(sess, body.sms_code, db)
+    with _session_slot(sess, "verify"), _upstream_slot("verify"):
+        out = _verify_and_store(sess, body.sms_code, db)
 
     # 公开接口**不回显** uid / 账号 id，只回模糊化的账号名，
     # 避免陌生人靠反复登录枚举号池内容。
@@ -701,6 +740,7 @@ def join_verify(body: JoinIn, request: Request, db: Session = Depends(get_db)):
         "already": out["duplicated"],
         "message": "注册成功",
         "masked": _mask_name(out["account"].get("name") or out["uid"]),
+        "invitation": out.get("invitation"),
     }
 
 
@@ -753,20 +793,25 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
         raise _fail(e, 502)
 
     # 已成功过 -> 直接复用（幂等）
-    with sess.lock:
+    with _try_session_slot(sess) as acquired:
+        if not acquired:
+            return {"done": False, "busy": True}
         if sess.result_cache is not None:
             cached = sess.result_cache
             return {
                 "done": True,
                 "message": "注册成功",
-                "masked": _mask_name(cached.get("name") or cached.get("uid")),
+                "masked": _mask_name((cached.get("account") or {}).get("name") or cached.get("uid")),
+                "invitation": cached.get("invitation"),
             }
 
         try:
             # 闸门满了不算错误：轮询本来就每 2.5s 一次，静默回 done=false
             # 让前端下一轮再来，对用户完全无感。
             with _upstream_slot("poll"):
-                token = wb_login.fetch_credential_by_state(sess.plugin_state)
+                token = sess.official_token or wb_login.fetch_credential_by_state(sess.plugin_state)
+                if token:
+                    sess.official_token = token
         except HTTPException as he:
             if he.status_code == 503:
                 return {"done": False, "busy": True}
@@ -777,11 +822,16 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
             return {"done": False}
 
         try:
-            credential, meta = wb_login.build_credential_from_token(token)
+            with _upstream_slot("poll_finalize"):
+                credential, meta = wb_login.build_credential_from_token(token)
+                out = _store_verified_credential(credential, meta, db)
+                out["invitation"] = wb_login.try_bind_invitation(sess, credential)
+        except HTTPException as he:
+            if he.status_code == 503:
+                return {"done": False, "busy": True}
+            raise
         except wb_login.WbLoginError as e:
             raise _fail(e, 502)
-
-        out = _store_verified_credential(credential, meta, db)
         sess.result_cache = dict(out)
         sess.consumed = True
         sess.consumed_at = time.time()
@@ -790,5 +840,6 @@ def join_official_poll(body: OfficialIn, request: Request, db: Session = Depends
         "done": True,
         "message": "注册成功",
         "masked": _mask_name(out["account"].get("name") or out["uid"]),
+        "invitation": out.get("invitation"),
     }
 

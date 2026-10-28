@@ -77,15 +77,11 @@ tests/
 *_test.py
 test/
 
-# ===== 内部分析文档（不提交） =====
-# docs/ 里是协议逆向取证与排查记录，含**未脱敏的真实手机号、真实 token
-# 片段、以及本地账号池的真实数据**（例：某次实测记录里直接写了手机号）。
-# 这些属于内部资料而非产品代码，一律不上传；需要时本地保留。
+# ===== 公开文档白名单：其余资料仅存仓库外 =====
 docs/*
-# 例外：发版公告是给用户看的公开内容，必须随版本提交。
-# 注意 git 不会进入被整体排除的目录，所以这里用 docs/* 而不是 docs/ 开头，
-# 否则 !docs/RELEASE_NOTES_*.md 永远无法生效。
-!docs/RELEASE_NOTES_*.md
+!docs/RELEASE_NOTES_[0-9]*.[0-9]*.[0-9]*.md
+docs/RELEASE_NOTES_*[!0-9.]*.md
+!docs/PUBLICATION.md
 
 # ===== 逆向取证 / 本地诊断脚本（不提交） =====
 # 默认忽略 Python 排障脚本；通用构建与用户工具在下方显式保留。
@@ -107,6 +103,8 @@ desktop/assets/*.ico
 desktop/assets/*.png
 
 !scripts/check_runtime.py
+!scripts/upgrade_gate.py
+!scripts/upgrade_control.py
 !scripts/check_maintenance.py
 !scripts/export_credential_key.py
 !scripts/asar_grep.py
@@ -125,8 +123,10 @@ workbuddy_admin.db-wal
 # Local credentials file
 登录密码.txt
 
-# Sanitized public implementation notes
-!docs/
-!docs/2api-increment-risk-scheduling.md
-!docs/protocol-reference.md
-!docs/review-27-29.md
+
+# Private research, evidence, screenshots and migration audit reports
+private/
+internal/
+research/
+evidence/
+images/

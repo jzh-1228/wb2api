@@ -215,7 +215,7 @@ def mark_upstream_error(kind, status=None):
     allowed = {'hard_credit', 'soft_rate', 'model_rate', 'model_block', 'account_fault',
                'session_dead', 'waf', 'server', 'not_found', 'transport', 'client',
                'no_account', 'success', 'unknown', 'model_queue', 'retry_exhausted',
-               'upstream_internal', 'model_behavior'}
+               'upstream_internal', 'model_behavior', 'upstream_auth_anomaly'}
     if record is not None:
         with _lock:
             record['upstream_error'] = kind if kind in allowed else 'unknown'
@@ -266,7 +266,7 @@ def activity_snapshot(paths, key_ids=None, limit=100):
     """Copy only bounded display fields; leave diagnostic histories untouched."""
     fields = ('id', 'key_id', 'path', 'requested_model', 'started_at', 'status',
               'outcome', 'phase', 'request_error', 'network_error', 'upstream_error',
-              'upstream_attempts')
+              'upstream_attempts', 'last_account_id', 'client_ip')
     def visible(record):
         return (record.get('key_id') and record.get('path') in paths
                 and (key_ids is None or record['key_id'] in key_ids))
@@ -278,6 +278,40 @@ def activity_snapshot(paths, key_ids=None, limit=100):
         active = [record for record in _active.values() if visible(record)]
         return {'active_count': len(active), 'active': [copy(r) for r in active[:limit]],
                 'recent': [copy(r) for r in reversed(_recent) if visible(r)][:limit]}
+
+
+def key_ip_snapshot(key_ids=None):
+    """Copy only per-key/IP counts, start times and in-flight models."""
+    wanted = set(key_ids) if key_ids is not None else None
+    grouped = {}
+    with _lock:
+        for record in _active.values():
+            key_id = record.get('key_id')
+            ip = record.get('client_ip')
+            if (not isinstance(key_id, int) or key_id <= 0
+                    or (wanted is not None and key_id not in wanted)
+                    or not ip or ip == 'unknown'):
+                continue
+            summary = grouped.setdefault(key_id, {
+                'active_requests': 0, 'active_ips': 0, 'ips': {},
+            })
+            item = summary['ips'].setdefault(ip, {
+                'active_requests': 0, 'first_started_at': None,
+                'last_started_at': None, 'models': {},
+            })
+            started = record.get('started_at')
+            item['active_requests'] += 1
+            summary['active_requests'] += 1
+            model = record.get('requested_model') or record.get('last_model')
+            if model:
+                item['models'][model] = item['models'].get(model, 0) + 1
+            if started and (item['first_started_at'] is None or started < item['first_started_at']):
+                item['first_started_at'] = started
+            if started and (item['last_started_at'] is None or started > item['last_started_at']):
+                item['last_started_at'] = started
+        for summary in grouped.values():
+            summary['active_ips'] = len(summary['ips'])
+    return grouped
 
 
 def activity_live_signature(paths, limit=100):
@@ -294,8 +328,8 @@ def activity_live_signature(paths, limit=100):
         for record in _active.values():
             if not (record.get('key_id') and record.get('path') in paths):
                 continue
-            parts.append('%s/%s/%s' % (record.get('id'), record.get('phase'),
-                                       record.get('status')))
+            parts.append('%s/%s/%s/%s' % (record.get('id'), record.get('phase'),
+                                       record.get('status'), record.get('last_account_id')))
             if len(parts) >= limit:
                 break
         recent = []
@@ -336,8 +370,20 @@ class TimingMiddleware:
                 or scope.get('path', '').rstrip('/') == '/v1/audio/transcriptions'):
             return await self.app(scope, receive, send)
         start = time.perf_counter()
+        # Keep live IPs consistent with usage logging and IP blocking.
+        try:
+            from starlette.requests import Request
+            from admin.client_ip import request_ip
+            request = Request(scope)
+            client_ip = request_ip(request)
+            user_agent = request.headers.get('user-agent', '').strip()[:512]
+        except Exception:
+            client_ip = 'unknown'
+            user_agent = ''
         record = {'id': uuid.uuid4().hex, 'path': scope['path'],
                   'method': scope.get('method', ''),
+                  'client_ip': client_ip,
+                  'user_agent': user_agent,
                   'started_at': datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
                   'status': None, 'headers_ms': None, 'first_body_ms': None, 'total_ms': None,
                   'first_delta_ms': None, 'request_bytes': 0, 'response_bytes': 0,
@@ -403,6 +449,8 @@ class TimingMiddleware:
                 record['outcome'] = 'interrupted'
             raise
         finally:
+            from admin.request_payload import release
+            release(record)
             record['total_ms'] = round((time.perf_counter()-start)*1000, 1)
             if record['request_error'] == 'client_disconnected' and not record['upload_complete']:
                 record['outcome'] = 'disconnected'

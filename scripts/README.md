@@ -1,4 +1,6 @@
-# 通用工具脚本
+# wb2api 通用工具脚本
+
+名称与路径中的 `***` 表示已脱敏，实际参数、文件名和存储位置以现有源码及配置为准；兼容参数保留原格式。
 
 在项目根目录执行。Python 脚本可先使用 `--help` 查看参数。
 
@@ -28,10 +30,10 @@ Linux 守护脚本的安装方式与环境变量见 `watchdog.sh` 文件头。Do
 在已安装官方 Windows 客户端的电脑上执行：
 
 ```powershell
-python scripts/export_credential_key.py --output ..\workbuddy-private\credential-key.json
+python scripts/export_credential_key.py --output ..\wb2api-private\credential-key.json
 ```
 
-脚本拒绝覆盖已有文件。将生成文件放到服务器 Web 根目录之外，仅允许服务用户读取，并通过 `WORKBUDDY_CREDENTIAL_KEY_FILE` 指向它。具体格式见 [协议文档](../docs/protocol-reference.md)。该文件包含私有密钥材料，不能提交到 Git、放入镜像或随安装包发布。
+脚本拒绝覆盖已有文件。将生成文件放到服务器 Web 根目录之外，仅允许服务用户读取，并按源码中的兼容参数指定文件路径。参数原名与格式以 `admin/credential_codec.py` 和脚本帮助为准。该文件包含私有密钥材料，不能提交到 Git、放入镜像或随安装包发布。
 
 ## ASAR 工具
 
@@ -41,6 +43,6 @@ python scripts/asar_slice.py --list --grep product.json
 python scripts/asar_slice.py --read /cli/product.json
 ```
 
-默认自动发现本机 WorkBuddy 安装位置，也可用 `--asar` 指定文件。读取到的内容可能含有客户端配置，请自行妥善保管。
+默认自动发现本机 wb 安装位置，也可用 `--asar` 指定文件。读取到的内容可能含有客户端配置，请自行妥善保管。
 
 本机部署快捷脚本、线上探针与一次性排障脚本不纳入仓库；`tests/` 保留在本地用于回归验证。

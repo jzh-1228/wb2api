@@ -168,8 +168,8 @@ def main():
             (ROOT / f"dist/build-{version}.json").unlink(missing_ok=True)
             for command in commands:
                 run(command, log, env)
-            artifacts = [ROOT / f"dist/WorkBuddy2API-{version}-windows-x64.exe",
-                         ROOT / f"dist/android/WorkBuddy2API-{version}-android-arm64.apk"]
+            artifacts = [ROOT / f"dist/wb2api-{version}-windows-x64.exe",
+                         ROOT / f"dist/android/wb2api-{version}-android-arm64.apk"]
             manifest = {"version": version, "files": []}
             for path in artifacts:
                 hasher = hashlib.sha256()

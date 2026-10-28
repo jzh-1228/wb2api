@@ -58,6 +58,16 @@ class ExportIn(BaseModel):
     format: Literal['backup', 'client'] = 'backup'
 
 
+class HealthCheckBatchIn(BaseModel):
+    account_ids: Optional[list[int]] = None
+
+    @validator('account_ids')
+    def limit_health_check_ids(cls, value):
+        if value is not None and len(value) > 5000:
+            raise ValueError('一次最多检查 5000 个账号')
+        return value
+
+
 def _uid_of(auth_json: str) -> str:
     """从 auth_json 里取 uid；取不到返回空串。"""
     try:
@@ -1123,6 +1133,39 @@ def refresh_batch(_: bool = Depends(require_admin), db: Session = Depends(get_db
         raise HTTPException(400, '没有可刷新的账号')
     job = jobrunner.RUNNER.start(key, len(ids), lambda job:_run_refresh_batch(ids, job), title='刷新全部账号')
     return job.snapshot()
+
+
+def _start_health_check(ids: list[int]):
+    if not ids:
+        raise HTTPException(400, '没有可检查的账号')
+    key = 'account-health-check'
+    running = jobrunner.RUNNER.get(key)
+    if running and running.status == 'running':
+        return {'reused': True, **running.snapshot()}
+    from admin.account_health import run_health_batch
+    job = jobrunner.RUNNER.start(
+        key, len(ids), lambda job: run_health_batch(ids, job),
+        title='账号三项上游健康检查')
+    return job.snapshot()
+
+
+@router.post('/health-check-batch')
+def health_check_batch(body: HealthCheckBatchIn,
+                       _: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    """Asynchronously check balance, model catalog and one real chat per account."""
+    query = db.query(Account)
+    if body.account_ids is not None:
+        query = query.filter(Account.id.in_(body.account_ids))
+    ids = [row.id for row in query.order_by(Account.id).all()]
+    return _start_health_check(ids)
+
+
+@router.post('/{acc_id}/health-check')
+def health_check_account(acc_id: int, _: bool = Depends(require_admin),
+                         db: Session = Depends(get_db)):
+    if db.get(Account, acc_id) is None:
+        raise HTTPException(404, '账号不存在')
+    return _start_health_check([acc_id])
 
 
 @router.post("/{acc_id}/refresh")

@@ -3,6 +3,7 @@ from datetime import datetime
 import logging
 
 from admin.model_busy import LABELS, normalize_response
+from model_metadata import model_type, type_tags
 
 _logger = logging.getLogger(__name__)
 
@@ -52,15 +53,18 @@ def format_entries(entries, levels=None, options=None, observed_at=None, stale=T
     options = options or {"show_multiplier": True, "show_busy": True}
     result = []
     for entry in entries:
+        kind = model_type(entry)
         level = levels.get(entry["id"], "unknown")
         multiplier = entry.get("credit_multiplier")
-        credit_label = f"×{multiplier:g}" if multiplier is not None else "×未知"
+        credit_label = '按实际用量' if kind == 'image' else f"×{multiplier:g}" if multiplier is not None else "×未知"
         parts = [entry["id"]]
         if options["show_multiplier"]:
             parts.append(credit_label)
         if options["show_busy"]:
             parts.append(LABELS[level])
         result.append({**entry,
+                       "model_type": kind, "tags": type_tags(entry),
+                       **({"credit_multiplier": None, "billing_mode": "upstream_usage", "is_free": False} if kind == 'image' else {}),
                        "name": ' · '.join(parts),
                        "busy_level": level, "busy_label": LABELS[level],
                        "busy_observed_at": observed_at, "busy_stale": stale})

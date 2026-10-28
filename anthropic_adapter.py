@@ -97,9 +97,13 @@ def anthropic_request_to_chat(body: dict) -> dict:
     #   - thinking.type == "disabled" → 显式关闭
     #   - thinking.type == "enabled"  → 有档位则用档位，否则给默认 high
     # （实测 high 是 deepseek 系上游的默认档，且必然开启思维链）
-    output_config = body.get("output_config")
-    effort_hint = output_config.get("effort") if isinstance(output_config, dict) else None
-    effort_hint = effort_hint.strip() if isinstance(effort_hint, str) else ""
+    effort_hint = ""
+    for value in (body.get("output_config"), body.get("reasoning_effort"),
+                  body.get("reasoningEffort"), body.get("reasoning")):
+        value = value.get("effort") if isinstance(value, dict) else value
+        if isinstance(value, str) and value.strip():
+            effort_hint = value.strip()
+            break
     thinking = body.get("thinking")
     if isinstance(thinking, dict):
         ttype = str(thinking.get("type") or "").strip().lower()
@@ -114,6 +118,15 @@ def anthropic_request_to_chat(body: dict) -> dict:
             chat.setdefault("reasoning_effort", effort.strip())
     elif isinstance(thinking, str) and thinking.strip().lower() in ("enabled", "adaptive"):
         chat.setdefault("reasoning_effort", effort_hint or "high")
+    elif isinstance(thinking, str) and thinking.strip().lower() == "disabled":
+        chat["thinking"] = {"type": "disabled"}
+    elif effort_hint:
+        chat["reasoning_effort"] = effort_hint
+
+    from upstream_compat import THINKING_OFF_SPELLINGS
+    if str(chat.get("reasoning_effort") or "").lower() in THINKING_OFF_SPELLINGS:
+        chat.pop("reasoning_effort", None)
+        chat["thinking"] = {"type": "disabled"}
 
     return chat
 

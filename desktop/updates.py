@@ -36,10 +36,7 @@ class UpdateService:
         if self.platform not in ("windows", "android"):
             raise ValueError("Unsupported update platform")
         suffix = "android-arm64.apk" if self.platform == "android" else "windows-x64.exe"
-        # 安装包名前缀跟随 version.json 的 asset 模板（上游改名后由 WorkBuddy2API- 变为 wb2api-），
-        # 避免在代码里二次硬编码导致改名后匹配不到任何资产。
-        prefix = METADATA["asset"].split("{version}", 1)[0]
-        self.asset_pattern = prefix + "{version}-" + suffix
+        self.asset_pattern = "wb2api-{version}-" + suffix
         self.cache = base / f"releases-cache-{self.platform}.json"
         self.lock = threading.Lock()
         self.releases = []
@@ -68,7 +65,7 @@ class UpdateService:
         with self.lock:
             try:
                 # Paginated history is bounded to 100 releases, newest first; no startup blocking.
-                headers = {"User-Agent": "WorkBuddy2API-Desktop", "Accept": "application/vnd.github+json"}
+                headers = {"User-Agent": "wb2api-Desktop", "Accept": "application/vnd.github+json"}
                 if self.etag:
                     headers["If-None-Match"] = self.etag
                 request = urllib.request.Request(
@@ -115,7 +112,7 @@ class UpdateService:
         expected = (asset.get("digest") or "").removeprefix("sha256:")
         if release["checksum"]:
             request = urllib.request.Request(release_url(release["checksum"]["browser_download_url"]),
-                                             headers={"User-Agent": "WorkBuddy2API-Desktop"})
+                                             headers={"User-Agent": "wb2api-Desktop"})
             with urllib.request.urlopen(request, timeout=20) as response:
                 expected = response.read(4096).decode("utf-8").strip().split()[0]
         if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):

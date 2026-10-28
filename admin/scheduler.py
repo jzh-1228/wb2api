@@ -194,9 +194,6 @@ def run_task(task: str, db, schedule: "Schedule | None" = None) -> dict:
         return res
     if task == "daily_checkin":
         return run_daily_checkin(db, schedule)
-    if task == "claim_benefits":
-        from admin.benefits import run_scheduled
-        return run_scheduled(db, schedule)
     if task == "refresh_growth_tasks":
         return run_refresh_growth_tasks()
     if task == "run_growth_tasks":
@@ -206,6 +203,9 @@ def run_task(task: str, db, schedule: "Schedule | None" = None) -> dict:
         return run_growth_plan(db)
     if task == "keepalive_tokens":
         return run_keepalive_tokens(db)
+    if task == "ban_recheck":
+        from admin.ban_recheck import run_ban_recheck
+        return run_ban_recheck(db)
     return {"task": task, "error": "未知任务类型"}
 
 
@@ -225,12 +225,67 @@ _AUTH_DEAD_MARKERS = (
 )
 
 
+class TrustedAuthFailure(RuntimeError):
+    """Both trusted authenticated probes rejected the current credential."""
+
+    trusted_auth_failure = True
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        from admin.routers.proxy import _extract_http_status
+        self.http_status = next(
+            (_extract_http_status(str(error)) for error in self.errors
+             if _extract_http_status(str(error)) in (401, 403)),
+            0,
+        )
+        self.raw_body = str(self.errors[0])[:65536] if self.errors else ""
+        super().__init__("trusted authentication probes both failed: " + self.raw_body)
+
+
 def _access_token_of(sess) -> str:
     """从 AccountSession 里取当前 accessToken（用于判断是否真的刷新了）。"""
     try:
         return ((sess.cm._session().get("auth") or {}).get("accessToken")) or ""
     except Exception:
         return ""
+
+
+def _access_token_alive(sess) -> bool:
+    """Check trusted authenticated endpoints after refresh fails.
+
+    The model-list route can reject a shared request shape while the bearer
+    session remains valid.  Balance and account-profile routes are the
+    authoritative probes for this decision; either one succeeding is enough.
+    """
+    try:
+        sess.fetch_balance()
+        return True
+    except Exception:
+        try:
+            sess.fetch_account_profile()
+            return True
+        except Exception:
+            return False
+
+
+def _trusted_token_probe(sess) -> None:
+    """Raise only when both trusted authenticated probes fail."""
+    errors = []
+    try:
+        sess.fetch_balance()
+        return
+    except Exception as first:
+        errors.append(first)
+    try:
+        sess.fetch_account_profile()
+        return
+    except Exception as second:
+        errors.append(second)
+    from admin.routers.proxy import _extract_http_status
+    statuses = [_extract_http_status(str(error)) for error in errors]
+    if statuses and all(status in (401, 403) for status in statuses):
+        raise TrustedAuthFailure(errors)
+    raise errors[0]
 
 
 def run_keepalive_tokens(db) -> dict:
@@ -251,8 +306,9 @@ def run_keepalive_tokens(db) -> dict:
         它只在**本地** expiresAt 临近时才刷新 token —— 而登录态被上游**吊销**时，
         本地 expiresAt 可能还有几千小时，于是保活一路报「存活 ✓」，
         真实请求却 401。这就是「xx 个号失效了但保活说全好」的根因。
-        现在改为调一次最轻的鉴权接口（取模型列表）：它不发对话、零积分消耗，
-        但能真实回答「这个登录态上游还认不认」。
+        现在优先调余额或账号信息接口：这些接口必须接受登录态，
+        能真实回答「这个登录态上游还认不认」。模型列表只用于路由，不作为
+        自动禁用账号的唯一依据。
       * **区分 401 与网络抖动**：401/403 是登录态废了（终态）；
         HttpClient Stream error 之类只是抖动，**绝不能**计入失效计数，
         否则一次网络抖动会把好号累计到阈值然后误禁。
@@ -326,7 +382,7 @@ def run_keepalive_tokens(db) -> dict:
                 if after and after != before:
                     refreshed += 1
                 # **真探测**：本地 expiresAt 不可信（登录态被吊销时它仍可能是
-                # 几千小时之后），只有打一次上游才能确认。
+                # 几千小时之后）。余额或账号信息接口才是登录态的权威判据。
                 # Save a rotated token before any optional probe can fail.
                 a.auth_json = sess.updated_json()
                 db.commit()
@@ -334,7 +390,7 @@ def run_keepalive_tokens(db) -> dict:
                 # independent and must not clear or extend those protections.
                 protected = maintenance._reason(a) in ("waf", "account_cooling")
                 if not protected:
-                    sess.fetch_models()
+                    _trusted_token_probe(sess)
                 # **回写刷新后的凭证**。原实现漏了这一步：刷新出来的新 token 只存在
                 # 临时文件里，`close()` 一删就没了，库里仍是旧 token ——
                 # 等于「刷新了但白刷」，下次请求还得从头再来（或直接失败）。
@@ -346,6 +402,9 @@ def run_keepalive_tokens(db) -> dict:
                 if not protected:
                     a.last_err_at = None
                     a.last_err_msg = ""
+                    # 陈旧证据一并清掉：last_upstream_error 没有时间字段、
+                    # 不会自过期，留着会让 _looks_login_dead 把健康号判死。
+                    a.last_upstream_error = ""
                 db.commit()
             except Exception as e:
                 msg = str(e)
@@ -353,32 +412,72 @@ def run_keepalive_tokens(db) -> dict:
                 # 从异常文本里抠出真实状态码再分类。
                 # 传 0 会把 401 归成 transport（网络抖动），于是失效号永远不被发现
                 # ——这正是「xx 个号失效、保活却报全好」的最后一环。
-                http_status = _extract_http_status(msg)
-                kind = maintenance.note_failure(db, a, e)
+                http_status = getattr(e, "http_status", 0) or _extract_http_status(msg)
+                trusted_failure = bool(getattr(e, "trusted_auth_failure", False))
+                if trusted_failure:
+                    # This exception is produced only after both trusted
+                    # account/balance probes rejected the credential.  Do not
+                    # send it through the shared-401 anomaly gate.
+                    from admin.upstream_errors import error_info
+                    a.last_upstream_error = json.dumps(
+                        error_info(getattr(e, "raw_body", msg), http_status),
+                        ensure_ascii=False)
+                    kind = "session_dead"
+                else:
+                    kind = maintenance.note_failure(db, a, e)
+                if kind == "session_dead" and not trusted_failure:
+                    from admin.upstream_auth_guard import observe
+                    if observe(http_status, msg, getattr(a, "uid", "")):
+                        kind = "upstream_auth_anomaly"
                 # Only explicit session failures count toward disabling. Account
                 # restrictions and WAF use the same cooling policy as conversations.
                 if kind == "session_dead":
-                    dead_ids.append(a.id)
-                    a.session_dead_fails = (a.session_dead_fails or 0) + 1
-                    a.cool_kind = "session_dead"
-                    a.last_err_at = datetime.utcnow()
-                    # 权威判定：登录态被上游**明确拒绝**，重试多少次都一样 → 立即禁用。
+                    # 权威判定：登录态被上游**明确拒绝**，重试多少次都一样。
                     #
                     # 两种都算权威：
                     #   * HTTP 401/403；
                     #   * 刷新接口返回的 `invalid_grant` /
                     #     `Offline user session not found` —— 这是 OAuth 标准里
                     #     「该会话已在服务端被删除」的语义，属于**终态**，
-                    #     与「文案式 12153 抖动」完全不同（实测那 xx 个号正是这个）。
+                    #     与「文案式 12153 抖动」完全不同。
                     authoritative = (http_status in (401, 403)
                                      or any(m in msg.lower() for m in _AUTH_DEAD_MARKERS))
-                    threshold = 1 if authoritative else _KEEPALIVE_DEAD_THRESHOLD
+                    # 但「续签失败」≠「号不可用」：上游吊销离线会话（refresh
+                    # invalid_grant）**不必然**吊销已签发的 access token ——
+                    # 线上实测 #18：refresh 死了 7 周，access token（60 天长效）
+                    # 的真实对话照样 200。只有 access token 实测**也被拒**时，
+                    # 这个号才真正无法出流量，才值得禁用；否则保留在池里服务，
+                    # 直到 access token 自然过期，探测失败后自会禁用。
+                    token_still_alive = (not trusted_failure and authoritative
+                                         and _access_token_alive(sess))
+                    if token_still_alive:
+                        a.last_err_at = datetime.utcnow()
+                        a.cool_kind = ""
+                        a.session_dead_fails = 0
+                        a.last_err_msg = (
+                            f"保活续签失败（refresh token 已失效，无法再续签）"
+                            f"但 access token 实测仍可用，暂保留出流量；"
+                            f"请尽快重新登录：{msg[:120]}"
+                        )[:255]
+                        db.commit()
+                        failed += 1
+                        if len(errors) < 5:
+                            errors.append(f"#{a.id}: 续签失败但 token 实测可用，保留（需重登）")
+                        continue
+                    dead_ids.append(a.id)
+                    a.session_dead_fails = (a.session_dead_fails or 0) + 1
+                    a.cool_kind = "session_dead"
+                    a.last_err_at = datetime.utcnow()
                     if authoritative:
                         a.last_err_msg = (
                             f"登录态被上游拒绝（HTTP {http_status}），需重新登录：{msg[:150]}"
                         )[:255]
                     else:
                         a.last_err_msg = (msg or "keepalive 探测失败")[:255]
+                    # Keepalive is a health hint, not the authority for
+                    # deleting a credential.  Require repeated failures; a
+                    # shared route/header fault must never empty the pool.
+                    threshold = max(3, _KEEPALIVE_DEAD_THRESHOLD)
                     if a.session_dead_fails >= threshold:
                         a.status = "disabled"
                         a.cool_until = None
@@ -392,7 +491,8 @@ def run_keepalive_tokens(db) -> dict:
                                       f"{'，HTTP ' + str(http_status) if authoritative else ''}）")
                 else:
                     # Transport failures do not disable credentials; WAF/rate
-                    # restrictions have already been recorded by note_failure.
+                    # restrictions and shared auth anomalies have already been
+                    # recorded without changing account status.
                     failed += 1
                     if len(errors) < 5:
                         errors.append(f"#{a.id}: {kind} {msg[:90]}")
@@ -594,7 +694,7 @@ def run_daily_checkin(db, schedule: "Schedule | None" = None) -> dict:
     """遍历活跃账号执行每日签到领取积分。
 
     风控要点：
-      - 全部请求经 CredentialManager 注入 X-Device-Token（与桌面端一致）。
+      - 请求只使用账号凭据和该接口实际需要的字段；不合成桌面设备令牌。
       - 若任务配置了 stop_after（下次停止领取时间），到达后直接跳过，不再发领取请求，
         避免活动下线后继续请求触发上游风控。
       - 若某账号领取返回 EventEnded(1003)，自动把 stop_after 设为今天，后续不再尝试。
@@ -1124,6 +1224,26 @@ _scheduler_lock = threading.Lock()
 _scheduler_started = False
 
 
+def ensure_ban_recheck_schedule(db):
+    """补齐「风控封号复核」定时任务（幂等）。
+
+    每 30 分钟一轮；真正的探测频率由 admin/ban_recheck.py 的退避控制
+    （每号 ≥ BAN_RECHECK_MIN_INTERVAL，持续仍封则指数退避）。
+    ADMIN_BAN_RECHECK_ENABLED=0 时禁用任务（保留后台手动触发能力）。
+    """
+    row = db.query(Schedule).filter(Schedule.task == "ban_recheck").first()
+    if not settings.BAN_RECHECK_ENABLED:
+        if row is not None and row.enabled:
+            row.enabled = 0
+            db.commit()
+        return
+    if row is None:
+        db.add(Schedule(name="风控封号复核与自动解封", task="ban_recheck",
+                        interval_minutes=30, enabled=1,
+                        next_run_at=datetime.utcnow() + timedelta(minutes=2)))
+        db.commit()
+
+
 def start_scheduler():
     """在 FastAPI 启动时调用：播种默认任务并拉起守护线程。
 
@@ -1142,9 +1262,13 @@ def start_scheduler():
         ensure_growth_schedules(db)
         ensure_keepalive_schedule(db)
         ensure_credit_schedule(db)
+        ensure_ban_recheck_schedule(db)
         ensure_growth_plan_schedule(db)
-        from admin.benefits import ensure_schedule
-        ensure_schedule(db)
+        # DeepSeek's time-limited compensation endpoint expired; retire old
+        # schedules so a legacy database never keeps polling it.
+        db.query(Schedule).filter(Schedule.task.in_(("claim_benefits", "claim_compensation"))).delete(
+            synchronize_session=False)
+        db.commit()
         from admin.growth_center import import_last_run
         import_last_run(db)
         db.close()

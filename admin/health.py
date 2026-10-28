@@ -66,10 +66,21 @@ def model_health(db, hours=24):
         total = sum(distribution.values())
         ok = distribution.get("success", 0) + distribution.get("", 0)
         # Percentiles describe the latest bounded sample; counts use the whole window.
-        samples = db.query(UsageLog.ttfb_ms, UsageLog.latency_ms).filter(
+        samples = db.query(UsageLog.ttfb_ms, UsageLog.latency_ms, UsageLog.total_tokens).filter(
             UsageLog.model == model, UsageLog.created_at >= since,
             UsageLog.error_kind.in_(("", "success"))).order_by(
-                UsageLog.created_at.desc(), UsageLog.id.desc()).limit(2000).all()
+            UsageLog.created_at.desc(), UsageLog.id.desc()).limit(2000).all()
+        # 吞吐 TPS：total_tokens / 端到端耗时。只统计有 token 数且耗时 > 1s 的
+        # 成功请求（<1s 的短请求分母太小，TPS 虚高没有参考意义）。
+        tps_values = [round(t * 1000 / ms, 1) for _ttfb, ms, t in samples
+                      if t and ms and ms >= 1000]
+        tps_stats = _percentiles(tps_values)
+        if tps_values:
+            tps_stats["mean"] = round(sum(tps_values) / len(tps_values), 1)
+            tps_stats["samples"] = len(tps_values)
+        else:
+            tps_stats["mean"] = None
+            tps_stats["samples"] = 0
         result.append({"model": model, "enabled": config is not None, "free": free,
                        "eligible_accounts": len(eligible),
                        "available_accounts": len(available) if not waf and config else 0,
@@ -82,6 +93,7 @@ def model_health(db, hours=24):
                        "failure_reasons": {k: v for k, v in distribution.items() if k not in ("", "success")},
                        "ttfb_ms": _percentiles([r[0] for r in samples]),
                        "latency_ms": _percentiles([r[1] for r in samples]),
+                       "tps": tps_stats,
                        "latency_sample_count": len(samples)})
     for item in result:
         reset = item["earliest_model_recovery"]

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""客户端参数档案（UA / 版本号 / 风控头 / 桌面指纹）——探测、保存、生效、同步。
+"""客户端参数档案（UA / 版本号 / 可选头 / 桌面指纹）——探测、保存、生效、同步。
 
 要解决什么问题
 --------------
-出站请求要伪装成官方桌面端，涉及一批参数：UA、桌面端与 CLI 版本号、
-风控头（`X-CodeBuddy-Request` 等）、桌面事件指纹（ideName / os / arch /
+客户端业务可能涉及一批参数：UA、桌面端与 CLI 版本号、
+已从官方源码确认的可选头（`X-CodeBuddy-Request` 等）、桌面事件指纹（ideName / os / arch /
 cpuCores / commit / releaseDate …）。
 
 这些值散落在代码与 `.env` 里，带来两个实际麻烦：
@@ -45,6 +45,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
+import re
 import sys
 import threading
 import time
@@ -70,16 +72,18 @@ _VALID_SOURCES = (SOURCE_AUTO, SOURCE_SAVED)
 _CACHE_TTL = 30.0
 
 # ---------------------------------------------------------------------------
-# 默认值：描述「一台 Windows 上的官方 WorkBuddy 桌面端」
+# 默认值：协议兼容参考值，不代表运行服务的真实设备环境。
 #
-# 这些是**伪装目标**的取值，不是「本机真实环境」。比如服务跑在 Linux 上，
-# 指纹依然要报 win32 —— 因为我们要看起来像官方 Windows 客户端。
-# 它们都可以被探测值 / 后台保存值 / 环境变量覆盖。
+# 只有现场探测或管理员显式保存的值才有对应来源；服务器没有客户端时，
+# OS 与硬件字段仍是兼容默认值，不能当作服务器的真实信息。
+# 值可由探测结果 / 后台保存值 / 环境变量覆盖。
 # ---------------------------------------------------------------------------
 DEFAULTS: dict[str, Any] = {
     # --- 版本（决定 UA 与 X-IDE-Version）---
-    "desktop_version": "5.5.6",
-    "cli_version": "2.137.1",
+    # 兜底参考值取自最近一次实测的安装包（2026-10：D:\WorkBuddy 5.9.0 / CLI 2.165.0）。
+    # 本机装了客户端时探测值会自动盖过它们；线上实例应靠同步档案钉住。
+    "desktop_version": "5.9.0",
+    "cli_version": "2.165.0",
     # --- 风控 SDK ---
     "turing_product_name": "WorkBuddy",
     # --- 用量归属（X-IDE-Name / X-IDE-Type / X-Product）---
@@ -103,18 +107,16 @@ DEFAULTS: dict[str, Any] = {
     #: 桌面事件指纹里的 `product` 字段（遥测用，取 deploymentType）。
     #: **与请求头的 X-Product 不是一回事**：这里是事件里的产品形态。
     "fp_product": "SaaS",
-    # --- 风控闸门头（官方客户端所有 API 请求必带）---
+    # --- 官方客户端请求中观察到的兼容头（按适用端点发送）---
     "headers": {
         "X-CodeBuddy-Request": "1",
         "X-Requested-With": "XMLHttpRequest",
         "Accept-Language": "zh-CN",
-        # 数据用途声明：官方**每次模型请求**都带（CLI bundle 里
-        # `ed[PRIVATE_DATA_HEADER] = enableModelOptimization ? "false" : "true"`）。
-        # 语义是「这份数据是否属于不可用于模型优化的私有数据」：
-        # 优化开启（默认）→ "false"，关闭 → "true"。
-        # 缺失它就是一个可识别的差异，所以默认跟随官方默认行为报 "false"；
-        # 若部署方要求「数据不参与优化」，把这里改成 "true" 即可。
-        "X-Private-Data": "false",
+        # X-Private-Data **默认不发**（2026-10 实测抓包：官方 CLI 的模型请求
+        # 不带它）。源码里它由 `resolveModelOptimizationEnabled` 拼出
+        # （优化开启→"false"），随后被 `applyPrivateDataHeaderPolicy` 按账号
+        # 类型/服务端策略剥离 —— 个人账号的线上真实流量里没有这个头。
+        # 企业账号如需对齐「优化关闭」上报，可在后台把它加回（值 "true"）。
     },
     # --- 桌面事件指纹 ---
     "ext_name": "workbuddy-desktop",
@@ -125,6 +127,13 @@ DEFAULTS: dict[str, Any] = {
     "memory_size": 24,
     "timezone": "Asia/Shanghai",
     "report_delay": 2000,
+    # --- 内嵌 OpenAI SDK（stainless JS 6.25.0）的可选指纹资料 ---
+    # 仅在实际客户端业务确认使用该 SDK 时展示/传递；普通模型网关请求不自动带它。
+    # 取值公式见 stainless_headers()；node_version 可由本机安装的官方客户端
+    # 精确探测（ELECTRON_RUN_AS_NODE），兜底值取自 2026-10 实测（Electron
+    # 37.10.3 内嵌 Node 22.21.1）。
+    "node_version": "v22.21.1",
+    "stainless_package_version": "6.25.0",
 }
 
 #: 值为非负整数的键（保存时按此校验/转换）
@@ -133,7 +142,8 @@ _INT_KEYS = ("cpu_cores", "memory_size", "report_delay", "turing_channel_id",
 #: 值为字符串的键
 _STR_KEYS = ("desktop_version", "cli_version", "turing_product_name",
              "ide_name", "ide_type", "product", "application_name", "fp_product",
-             "ext_name", "os", "arch", "os_version", "timezone", "commit")
+             "ext_name", "os", "arch", "os_version", "timezone", "commit",
+             "node_version", "stainless_package_version")
 #: 字符串字段的最大长度（防止把整个文件塞进配置里）
 _MAX_STR = 512
 #: 风控头名/值的最大长度
@@ -152,8 +162,8 @@ def _int_or_none(v) -> int | None:
 # ---------------------------------------------------------------------------
 # 现场探测
 # ---------------------------------------------------------------------------
-def snapshot() -> dict:
-    """探测本机客户端，返回**只包含真实探测到的键**的档案。
+def _snapshot_package() -> dict:
+    """探测本机客户端**安装包**，返回只包含真实读到的键的档案。
 
     探测不到任何东西时返回空 dict —— 调用方据此判断「这台机器上没有客户端」。
     线上服务器就是这种情况，它靠同步过来的 saved 档案工作。
@@ -210,6 +220,223 @@ def snapshot() -> dict:
     except Exception as e:
         _logger.debug("客户端探测部分失败：%s", e)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 本机系统探测（桌面事件指纹的硬件/系统字段）
+# ---------------------------------------------------------------------------
+#: Node `os.release()` / Electron `process.platform` / `process.arch` 的命名对齐。
+_OS_NAMES = {"windows": "win32", "darwin": "darwin", "linux": "linux"}
+_ARCH_NAMES = {"amd64": "x64", "x86_64": "x64", "x64": "x64",
+               "arm64": "arm64", "aarch64": "arm64",
+               "i386": "ia32", "i486": "ia32", "i586": "ia32",
+               "i686": "ia32", "x86": "ia32"}
+
+#: Windows 时区键名（GetDynamicTimeZoneInformation 的 TimeZoneKeyName，英文且
+#: 不随系统语言变）-> IANA 名。只收常见且无歧义的；查不到就放弃（该字段
+#: 退回兜底/保存值），绝不猜 —— 指纹里的时区报错比报默认值更显眼。
+_WIN_TZ_TO_IANA = {
+    "China Standard Time": "Asia/Shanghai",
+    "Taipei Standard Time": "Asia/Taipei",
+    "Hong Kong S.A.R. Standard Time": "Asia/Hong_Kong",
+    "Macau S.A.R. Standard Time": "Asia/Macau",
+    "Singapore Standard Time": "Asia/Singapore",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "SE Asia Standard Time": "Asia/Bangkok",
+    "India Standard Time": "Asia/Kolkata",
+    "Arabian Standard Time": "Asia/Dubai",
+    "W. Australia Standard Time": "Australia/Perth",
+    "E. Australia Standard Time": "Australia/Brisbane",
+    "UTC": "UTC",
+    "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Romance Standard Time": "Europe/Paris",
+    "Central Europe Standard Time": "Europe/Prague",
+    "Central European Standard Time": "Europe/Warsaw",
+    "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "Pacific Standard Time": "America/Los_Angeles",
+}
+
+
+def _probe_timezone() -> str:
+    """IANA 时区名，对齐官方取值 `Intl.DateTimeFormat().resolvedOptions().timeZone`。
+
+    只做**确定**的读取（环境变量 / Windows 时区键名 / Linux-mac 的系统配置），
+    读不到就返回空串 —— 不做 UTC 偏移反猜（同偏移的时区太多，猜了就是错的）。
+    """
+    tz = (os.environ.get("TZ") or "").strip()
+    if tz and (tz == "UTC" or re.fullmatch(r"[A-Za-z0-9_+\-]+/[A-Za-z0-9_+\-]+", tz)):
+        return tz
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _SYSTEMTIME(ctypes.Structure):
+                _fields_ = [("wYear", ctypes.c_ushort), ("wMonth", ctypes.c_ushort),
+                            ("wDayOfWeek", ctypes.c_ushort), ("wDay", ctypes.c_ushort),
+                            ("wHour", ctypes.c_ushort), ("wMinute", ctypes.c_ushort),
+                            ("wSecond", ctypes.c_ushort), ("wMilliseconds", ctypes.c_ushort)]
+
+            class _DTZI(ctypes.Structure):
+                _fields_ = [("Bias", ctypes.c_long),
+                            ("StandardName", ctypes.c_wchar * 32),
+                            ("StandardDate", _SYSTEMTIME),
+                            ("StandardBias", ctypes.c_long),
+                            ("DaylightName", ctypes.c_wchar * 32),
+                            ("DaylightDate", _SYSTEMTIME),
+                            ("DaylightBias", ctypes.c_long),
+                            ("TimeZoneKeyName", ctypes.c_wchar * 128),
+                            ("DynamicDaylightTimeDisabled", ctypes.c_ubyte)]
+
+            dtzi = _DTZI()
+            kernel32 = ctypes.windll.kernel32
+            kernel32.GetDynamicTimeZoneInformation.restype = ctypes.c_uint
+            if kernel32.GetDynamicTimeZoneInformation(ctypes.byref(dtzi)) != 0xFFFFFFFF:
+                return _WIN_TZ_TO_IANA.get(dtzi.TimeZoneKeyName, "")
+        except Exception as e:
+            _logger.debug("读取 Windows 时区失败：%s", e)
+        return ""
+    # POSIX：/etc/timezone（Debian 系）或 /etc/localtime 符号链接目标
+    try:
+        p = Path("/etc/timezone")
+        if p.is_file():
+            v = p.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+            if v and v[0].strip():
+                return v[0].strip()
+        link = os.path.realpath("/etc/localtime")
+        if "zoneinfo" in link:
+            return link.split("zoneinfo" + os.sep, 1)[-1].replace(os.sep, "/")
+    except Exception as e:
+        _logger.debug("读取系统时区失败：%s", e)
+    return ""
+
+
+def _probe_memory_gb() -> int:
+    """物理内存 GiB（Math.round(totalmem / 1024**3)，与官方客户端同式）。
+
+    官方源码（main/main-bootstrap.js）：
+        memorySize: Math.round(node_os.totalmem() / 1024 / 1024 / 1024)
+    JS Math.round 是四舍五入（half-up），Python round 是银行家舍入，
+    所以这里显式 `+0.5` 取整对齐。
+    """
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = _MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(st)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return int(st.ullTotalPhys / 1024 ** 3 + 0.5)
+            return 0
+        if sys.platform == "darwin":
+            import subprocess
+            r = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
+                               text=True, timeout=3)
+            return int(int(r.stdout.strip()) / 1024 ** 3 + 0.5) if r.returncode == 0 else 0
+        # Linux / *BSD：/proc/meminfo 的 MemTotal（kB）
+        p = Path("/proc/meminfo")
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return int(kb * 1024 / 1024 ** 3 + 0.5)
+    except Exception as e:
+        _logger.debug("读取物理内存失败：%s", e)
+    return 0
+
+
+def _probe_system() -> dict:
+    """本机系统只读探测：桌面事件指纹里的 os / arch / osVersion / cpuCores /
+    memorySize / timezone。
+
+    官方客户端（Electron）取值方式（已对照解包源码逐一核实）：
+        os        = process.platform                     -> win32 / darwin / linux
+        arch      = process.arch                         -> x64 / arm64 / ia32
+        osVersion = node_os.release()                    -> Windows 上为 10.0.xxxxx 内核版本
+        cpuCores  = node_os.cpus().length                -> 逻辑核数
+        memorySize= Math.round(os.totalmem()/1024**3)    -> 物理内存 GiB
+        timezone  = Intl...resolvedOptions().timeZone    -> IANA 名
+
+    全部是 Python 标准库可稳定读到的，读不到的键直接缺席、绝不含糊其辞。
+    """
+    out: dict[str, Any] = {}
+    try:
+        sysname = platform.system().lower()
+        if sysname in _OS_NAMES:
+            out["os"] = _OS_NAMES[sysname]
+        machine = platform.machine().lower()
+        if machine in _ARCH_NAMES:
+            out["arch"] = _ARCH_NAMES[machine]
+        # Windows 上 platform.version() 与 Node os.release() 同为内核版本
+        # （10.0.xxxxx）；其它平台两者都是 os.release() 的内核版本号。
+        rel = platform.version() if sysname == "windows" else platform.release()
+        rel = str(rel).strip()
+        if re.fullmatch(r"\d+(\.\d+){0,3}", rel):
+            out["os_version"] = rel
+        ncpu = os.cpu_count()
+        if ncpu and ncpu > 0:
+            out["cpu_cores"] = int(ncpu)
+        mem = _probe_memory_gb()
+        if mem > 0:
+            out["memory_size"] = mem
+        tz = _probe_timezone()
+        if tz:
+            out["timezone"] = tz
+        # 内嵌 Node 版本：来自后台一次性探测（_schedule_node_probe），尚未
+        # 就绪时缺省 —— 探测完成会失效缓存，下一次合成自然带上精确值。
+        nv = _node_version_memo.get("value")
+        if nv:
+            out["node_version"] = nv
+    except Exception as e:
+        _logger.debug("系统探测部分失败：%s", e)
+    return out
+
+
+def snapshot() -> dict:
+    """现场探测结果：**只包含真实读到的键**（安装包 + 本机系统）。
+
+    本机系统字段（os / arch / 内存 / 时区…）只有在**安装包探测成功**时才采纳
+    —— 指纹描述的应该是「真实跑着官方客户端的那台机器」。线上服务器没有
+    客户端，探测结果为空 dict，继续靠同步过来的 saved 档案工作；否则一台
+    Linux 服务器会把自己的 os/arch 报成指纹，反而引入新的可识别差异。
+
+    绝不抛异常。
+    """
+    pkg = _snapshot_package()
+    if not pkg:
+        return {}
+    # 安装包与系统字段互不重叠；包值放后面只是防御（真撞车时包值更权威）。
+    return {**_probe_system(), **pkg}
+
+
+def snapshot_detail() -> dict:
+    """探测明细：values（等价 snapshot()）+ 按 origin 拆分的来源。
+
+    origins: 每个键取自「安装包」（product.json / install-manifest.json 等）
+    还是「本机系统」（OS / 硬件 / 时区）。供后台把每个字段的来源标清楚，
+    不把兜底默认值混在「探测到」里展示。
+    """
+    pkg = _snapshot_package()
+    if not pkg:
+        return {"values": {}, "package": {}, "system": _probe_system(), "origins": {}}
+    sysd = _probe_system()
+    values = {**sysd, **pkg}
+    origins = {k: "本机系统" for k in sysd}
+    origins.update({k: "安装包" for k in pkg})
+    return {"values": values, "package": pkg, "system": sysd, "origins": origins}
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +529,7 @@ class ClientProfileStore:
         self._saved: dict = {}
         self._source: str = SOURCE_AUTO
         self._detected: dict = {}
+        self._origins: dict = {}
         self._computed: dict | None = None
         self._loaded_at: float = 0.0
         self._loaded: bool = False
@@ -342,12 +570,13 @@ class ClientProfileStore:
     def refresh(self, db=None) -> None:
         """强制重新加载（DB + 现场探测），并重算生效值。"""
         data, src = self._load_db(db)
-        det = snapshot()
-        computed = _compose(data, src, det)
+        detail = snapshot_detail()
+        computed = _compose(data, src, detail["values"])
         with self._lock:
             self._saved = data
             self._source = src
-            self._detected = det
+            self._detected = detail["values"]
+            self._origins = dict(detail.get("origins") or {})
             self._computed = computed
             self._loaded_at = time.time()
             self._loaded = True
@@ -391,7 +620,7 @@ class ClientProfileStore:
     def effective(self, db=None) -> dict:
         """实际生效的档案：兜底 <- 探测/保存 <- 环境变量。
 
-        这是所有调用方（构造 UA / 风控头 / 指纹）唯一该用的入口。
+        这是所有调用方（展示或明确支持该字段的客户端业务）唯一该用的入口。
         结果被缓存，保存或 TTL 到期后重算。
         """
         if db is not None:
@@ -409,7 +638,12 @@ class ClientProfileStore:
         return _compose(self.saved(), self.source(), snapshot())
 
     def sources(self, db=None) -> dict:
-        """每个键当前取自哪一层（排障用）。"""
+        """每个键当前取自哪一层（排障用）。
+
+        现场探测的键会进一步标明来自「安装包」（product.json 等安装包文件）
+        还是「本机系统」（OS / 硬件 / 时区探测），让后台能把
+        「官方客户端实测值」与「协议兼容参考默认值」分清楚。
+        """
         if db is not None:
             self.refresh(db)
         else:
@@ -417,6 +651,7 @@ class ClientProfileStore:
         with self._lock:
             saved = dict(self._saved)
             detected = dict(self._detected)
+            origins = dict(self._origins)
             src = self._source
         out: dict[str, str] = {}
         for k in set(list(DEFAULTS) + list(saved) + list(detected)):
@@ -426,11 +661,19 @@ class ClientProfileStore:
             env = _ENV_FOR.get(k)
             if env and (os.getenv(env) or "").strip():
                 out[k] = f"环境变量 {env}"
-            elif src == SOURCE_SAVED:
+                continue
+            def _probe_label() -> str:
+                origin = origins.get(k)
+                if origin == "本机系统":
+                    return "现场探测（本机系统）"
+                if origin == "安装包":
+                    return "现场探测（安装包）"
+                return "现场探测"
+            if src == SOURCE_SAVED:
                 out[k] = "已保存" if k in saved else (
-                    "现场探测" if k in detected else "内置兜底")
+                    _probe_label() if k in detected else "内置兜底")
             else:
-                out[k] = "现场探测" if k in detected else (
+                out[k] = _probe_label() if k in detected else (
                     "已保存" if k in saved else "内置兜底")
         out["source_mode"] = src
         return out
@@ -478,6 +721,9 @@ def _compose(saved: dict, src: str, detected: dict) -> dict:
     # 环境变量最后覆盖（运维逃生门，永远最高优先级）
     out = _apply_env(out)
 
+    # 首次使用档案后安排一次客户端 Node 版本探测（后台、一次性、不阻塞）
+    _schedule_node_probe()
+
     # 派生 UA：**始终**按 desktop_version / cli_version 现拼。
     #
     # 为什么不把 UA 当成一个可独立保存的字段：它 100% 由两个版本号决定
@@ -509,6 +755,8 @@ _ENV_FOR = {
     "ide_name": "WORKBUDDY_IDE_NAME",
     "ext_name": "WORKBUDDY_EXT_NAME",
     "user_agent": "WORKBUDDY_USER_AGENT",
+    "node_version": "WORKBUDDY_NODE_VERSION",
+    "stainless_package_version": "WORKBUDDY_STAINLESS_PACKAGE_VERSION",
 }
 
 
@@ -543,6 +791,103 @@ def _build_ua(desktop_version: str | None, cli_version: str | None,
     c = (cli_version or DEFAULTS["cli_version"]).strip()
     brand = (application_name or DEFAULTS["application_name"]).strip()
     return f"{brand}/{v} {brand}/{v} CLI/{c}"
+
+
+# ---------------------------------------------------------------------------
+# 官方内嵌 SDK（stainless JS 6.x）指纹头
+# ---------------------------------------------------------------------------
+#: Node `process.platform` -> SDK `X-Stainless-OS`（官方 normalizePlatform 映射）
+_STAINLESS_OS = {"win32": "Windows", "darwin": "MacOS", "linux": "Linux",
+                 "android": "Android", "freebsd": "FreeBSD", "openbsd": "OpenBSD"}
+#: `process.arch` -> `X-Stainless-Arch`（官方 normalizeArch 映射）
+_STAINLESS_ARCH = {"x64": "x64", "arm64": "arm64", "x32": "x32", "arm": "arm"}
+
+_node_probe_lock = threading.Lock()
+_node_probe_done = threading.Event()
+#: 后台探测到的内嵌 Node 版本（"" = 探测过但没有；None = 尚未探测）
+_node_version_memo: dict = {"value": None}
+
+
+def stainless_headers() -> dict:
+    """构造已探测的 Stainless 资料，供明确使用该 SDK 的业务查看。
+
+    普通模型网关请求不会自动调用此函数。
+
+    取值公式对照官方解包源码（cli/dist/lazy-lite-wb/3043.*.mjs，SDK 6.25.0）::
+
+        X-Stainless-Lang            恒 "js"
+        X-Stainless-Package-Version SDK 版本常量（"6.25.0"）
+        X-Stainless-OS              normalizePlatform(process.platform) -> Windows/MacOS/Linux
+        X-Stainless-Arch            normalizeArch(process.arch)         -> x64/arm64/…
+        X-Stainless-Runtime         恒 "node"
+        X-Stainless-Runtime-Version process.version（带 v 前缀，如 "v22.21.1"）
+        X-Stainless-Retry-Count     String(retryCount)，本网关每次上游请求都是
+                                    全新 SDK 请求，恒 "0"
+
+    os/arch 复用档案里探测到的值（与桌面指纹同源）；node_version 优先用本机
+    官方客户端探测的精确值（见 _probe_node_version_once）。
+    """
+    p = effective()
+    os_name = _STAINLESS_OS.get(str(p.get("os") or "").lower(), "Unknown")
+    arch = _STAINLESS_ARCH.get(str(p.get("arch") or "").lower(), "unknown")
+    ver = str(p.get("node_version") or DEFAULTS["node_version"]).strip()
+    pkg = str(p.get("stainless_package_version")
+              or DEFAULTS["stainless_package_version"]).strip()
+    return {
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Package-Version": pkg,
+        "X-Stainless-OS": os_name,
+        "X-Stainless-Arch": arch,
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": ver,
+        "X-Stainless-Retry-Count": "0",
+    }
+
+
+def _probe_node_version_once() -> str:
+    """从本机官方客户端读内嵌 Node 版本（X-Stainless-Runtime-Version 用）。
+
+    `ELECTRON_RUN_AS_NODE=1 WorkBuddy.exe -e …` 只是把官方 exe 当 node 跑一行
+    打印，只读、无副作用，约 1 秒。结果进程内记忆（含失败），绝不重试。
+    """
+    if sys.platform != "win32" or os.getenv("WORKBUDDY_SKIP_NODE_PROBE"):
+        return ""
+    try:
+        from wb_install import WB
+        exe = WB.install_dir()
+        exe = exe / "WorkBuddy.exe" if exe else None
+        if not exe or not exe.is_file():
+            return ""
+        import subprocess
+        env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+        r = subprocess.run([str(exe), "-e", "process.stdout.write(process.versions.node)"],
+                           capture_output=True, text=True, timeout=10, env=env)
+        v = (r.stdout or "").strip()
+        return f"v{v}" if re.fullmatch(r"\d+\.\d+\.\d+", v) else ""
+    except Exception as e:
+        _logger.debug("探测客户端 Node 版本失败：%s", e)
+        return ""
+
+
+def _schedule_node_probe() -> None:
+    """首次使用档案后，延迟 3 秒后台探测一次 Node 版本并失效缓存。
+
+    绝不在导入期/请求线程里同步跑（约 1 秒的子进程不可接受）；探测完成后
+    `STORE.invalidate()`，下一次合成档案即带上精确值。进程内只跑一次。
+    """
+    with _node_probe_lock:
+        if _node_probe_done.is_set():
+            return
+        _node_probe_done.set()
+
+    def _run() -> None:
+        v = _probe_node_version_once()
+        _node_version_memo["value"] = v
+        if v and v != DEFAULTS["node_version"]:
+            _logger.info("已探测客户端内嵌 Node 版本：%s（X-Stainless-Runtime-Version）", v)
+            STORE.invalidate()
+
+    threading.Timer(3.0, _run).start()
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +980,47 @@ def risk_headers() -> dict:
             # 后加入的不会覆盖上面已定的四个归属头（避免把 IDE 名改成风控头）
             h.setdefault(str(k), str(v))
     return h
+
+
+def runtime_diagnostics() -> dict:
+    """Return safe runtime/request-contract diagnostics for the admin UI.
+
+    This reports whether the local native device-token provider is available
+    and which generated header groups are present.  Secrets, bearer tokens and
+    raw device identifiers are intentionally excluded.
+    """
+    try:
+        from admin.turing_token import status as turing_status
+        device_token = turing_status()
+    except Exception as exc:
+        device_token = {
+            "available": False,
+            "source": "unavailable",
+            "checked": False,
+            "node_available": False,
+            "helper_available": False,
+            "cached_failure": False,
+            "error": type(exc).__name__,
+        }
+    generated = risk_headers()
+    return {
+        "platform": sys.platform,
+        "device_token": device_token,
+        "header_groups": {
+            "client_profile": sorted(generated),
+            "sdk_stainless": sorted(stainless_headers()),
+            "account_session": [
+                "Authorization", "Accept", "Content-Type", "User-Agent",
+                "X-User-Id", "X-Enterprise-Id", "X-Tenant-Id", "X-Domain",
+            ],
+            "request_trace": [
+                "X-Request-ID", "X-Conversation-Request-ID",
+                "X-Conversation-Message-ID", "X-Root-Request-ID",
+                "traceparent", "b3", "X-B3-TraceId", "X-B3-SpanId",
+                "X-B3-Sampled", "X-Trace-ID",
+            ],
+        },
+    }
 
 
 def fingerprint(uid: str, machine_id: str = "", session_id: str = "") -> dict:
@@ -772,9 +1158,10 @@ __all__ = [
     "STORE", "DEFAULTS", "PROFILE_KEY", "SOURCE_KEY",
     "SOURCE_AUTO", "SOURCE_SAVED",
     "effective", "effective_local", "saved", "source", "sources",
-    "snapshot_live", "detected",
+    "snapshot_live", "detected", "snapshot_detail",
     "invalidate", "ua", "desktop_version", "cli_version",
     "turing_channel_id", "turing_product_name",
-    "risk_headers", "fingerprint", "save", "reset", "normalize", "diff",
+    "risk_headers", "stainless_headers", "fingerprint", "save", "reset",
+    "normalize", "diff",
     "snapshot",
 ]

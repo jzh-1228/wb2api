@@ -1,0 +1,19 @@
+[Unit]
+Description=wb2api planned upgrade waiting proxy
+After=network.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/wwwroot/workbuddy2api
+RuntimeDirectory=wb2api-upgrade
+RuntimeDirectoryMode=0755
+ExecStart=/www/server/pyporject_evn/versions/3.10.20/bin/python -m uvicorn scripts.upgrade_gate:app --host 127.0.0.1 --port 8791 --no-access-log --timeout-graceful-shutdown 660
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

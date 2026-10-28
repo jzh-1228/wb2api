@@ -83,7 +83,6 @@ DEFAULT_NAMES = {
     "refresh_credits": ("每 2 小时更新积分到期快照", "更新积分到期快照"),
     "sync_models": ("每日同步模型列表", "同步模型列表"),
     "daily_checkin": ("每日签到领取积分", "签到领取积分"),
-    "claim_benefits": ("每日检查并领取权益", "检查并领取权益"),
     "refresh_growth_tasks": ("每日更新成长任务列表", "更新成长任务列表"),
     "run_growth_tasks": ("每日自动做成长任务", "自动做成长任务"),
     "run_growth_plan": ("WorkBuddy 成长计划巡检", "WorkBuddy 成长计划巡检"),

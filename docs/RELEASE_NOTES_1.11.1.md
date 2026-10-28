@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.11.1
+# wb2api 1.11.1
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 本次补丁修复 Mac 端 Zcode 的已知提示词 11128 触发场景，并优化定时任务配置界面。
 
@@ -11,8 +13,8 @@
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | `WorkBuddy2API-1.11.1-windows-x64.exe` |
-| Android ARM64（Android 7.0 及以上） | `WorkBuddy2API-1.11.1-android-arm64.apk` |
+| Windows x64 | `***-1.11.1-windows-x64.exe` |
+| Android ARM64（Android 7.0 及以上） | `***-1.11.1-android-arm64.apk` |
 
 Windows 使用新版 EXE 更新；Android 使用同签名 APK 覆盖安装，保留账号与配置。两个安装包均提供 `.sha256` 校验文件，1.11.0 客户端可通过更新检查发现本版。
 

@@ -1,4 +1,6 @@
-# Android 本地版
+# wb2api Android 本地版
+
+名称与路径中的 `***` 表示已脱敏，实际参数、文件名和存储位置以现有源码及配置为准；兼容参数保留原格式。
 
 Android 7.0+，ARM64 手机。原生 WebView + Chaquopy 内置 Python，手机本地运行 FastAPI 和 SQLite；无需电脑、Node、MySQL、Redis 或 Termux。首次解压 Python，后续复用。手机号登录、浏览器 `/join` 授权都会把账号加入手机账号池。
 
@@ -12,7 +14,7 @@ API 默认 `http://127.0.0.1:8790/v1`，服务监听 `0.0.0.0`，支持同机及
 
 服务用前台通知保持运行，离开界面或切到浏览器仍继续提供 API。通知里有“停止服务”，停止后再次打开应用即可启动。部分手机系统会限制后台运行，需要在手机的应用电池设置里允许后台活动。服务运行期间持有 CPU 唤醒锁以维持请求，会增加耗电；不使用时可停止服务。清除应用数据或卸载会删除账号与配置，覆盖安装同签名新版会保留。
 
-数据位于应用私有目录 `files/WorkBuddy2API/`：`workbuddy.db`、`config.json` 和 `logs/mobile.log`。不会写入 APK 或公共存储目录，自动云备份关闭。
+数据位于应用私有目录 `files/***/`：`***.db`、`config.json` 和 `logs/mobile.log`。不会写入 APK 或公共存储目录，自动云备份关闭。
 
 安卓菜单中的“同步设置”现改为“设置”，不再展示或请求线上推送配置。设置页显示系统前台服务注册、通知通道、电池优化和最近监听检查；提供保留账号数据的服务重启、系统通知和应用设置入口。启动与进入设置页自动检查本机监听、账号数据库、`/join`、三个对话入口的无 Key 鉴权，以及所选真实 API Key 的模型列表。自动检查不发起模型推理；无 Key、空模型列表、超时和接口错误会明确显示。
 
@@ -30,7 +32,7 @@ python scripts/build_android.py --gradle C:\Tools\gradle-8.11.1\bin\gradle.bat -
 
 Gradle/Maven 优先使用阿里镜像，纯 Python 依赖使用清华镜像，Android 编译扩展由 Chaquopy 提供匹配架构的 wheels。全部运行依赖构建时装入 APK，不在手机上执行 pip 安装。
 
-产物 `dist/android/WorkBuddy2API-版本-android-arm64.apk` 与 `.apk.sha256`。`build/android-signing/` 自动生成并保存本机签名密钥，必须自行备份此目录，后续覆盖更新使用同一密钥；不得提交到 Git。公开 APK 发布可使用现有 GitHub Releases，但构建时必须保留此签名身份。版本来源与桌面端共享 `desktop/version.json`。
+产物 `dist/android/wb2api-版本-android-arm64.apk` 与 `.apk.sha256`。`build/android-signing/` 自动生成并保存本机签名密钥，必须自行备份此目录，后续覆盖更新使用同一密钥；不得提交到 Git。公开 APK 发布可使用现有 GitHub Releases，但构建时必须保留此签名身份。版本来源与桌面端共享 `desktop/version.json`。
 
 `--prepare-only` 生成精简的 Python/静态资源目录，便于独立验证。不要把整个项目或本机 `.env` 当成 Chaquopy 的源目录。
 
@@ -56,8 +58,8 @@ APK 的 HTTP 协议层另外记录首个请求字节到处理器的等待、ASGI
 
 构建时加 `--with-debug` 可同时生成 `android/app/build/outputs/apk/debug/app-debug.apk`。调试包的应用 ID 带 `.debug`，数据与正式包隔离；只在调试包启用 WebView 调试和 `DebugProbeActivity`，用于通过 ADB 在真实嵌入式 Python 环境执行探针。调试入口不会进入正式 APK。
 
-新版 Windows WorkBuddy `.info` 的 token、昵称和手机号可能为 `$wbEncrypted` 包装对象。Windows 导入时使用本机官方客户端的解密能力；安卓没有该客户端能力，请在电脑账号管理页导出兼容 `.info` 再导入手机，或使用手机号/授权页面登录。不会把电脑解密密钥打入 APK。
+新版 Windows wb `.info` 的 token、昵称和手机号可能为 `$wbEncrypted` 包装对象。Windows 导入时使用本机官方客户端的解密能力；安卓没有该客户端能力，请在电脑账号管理页导出兼容 `.info` 再导入手机，或使用手机号/授权页面登录。不会把电脑解密密钥打入 APK。
 
-账号导入后独立后台队列自动刷新余额，模型配置为空时同步初始目录，避免排在成长领奖任务后面。初始化进度可见，切换到模型页会重新读取配置；启动时恢复未完成初始化。数据库凭证会话直接在内存中读取和刷新，再按原有流程写回 SQLite，不再依赖可能被系统清理的 Chaquopy 临时目录。账号数据库仍位于应用私有目录 `files/WorkBuddy2API/workbuddy.db`。
+账号导入后独立后台队列自动刷新余额，模型配置为空时同步初始目录，避免排在成长领奖任务后面。初始化进度可见，切换到模型页会重新读取配置；启动时恢复未完成初始化。数据库凭证会话直接在内存中读取和刷新，再按原有流程写回 SQLite，不再依赖可能被系统清理的 Chaquopy 临时目录。账号数据库仍位于应用私有目录 `files/***/***.db`。
 
 账号备份和调用日志 CSV 导出使用 Android 系统文件保存对话框，选定位置后在后台写入，成功关闭输出流后才提示成功；取消或写入失败会明确提示。文件选择器支持真正的多文件选择。旧版 WebView 91 的模型列表渲染已覆盖兼容测试，设置检测同时核对启用账号和本地模型数据，HTTP 200 的空列表会提示未通过。

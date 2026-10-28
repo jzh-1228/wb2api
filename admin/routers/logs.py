@@ -35,15 +35,17 @@
 """
 import asyncio
 import csv
+import copy
 import io
 import json
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request, Response, HTTPException
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, case
 from sqlalchemy.orm import Session, defer
@@ -52,6 +54,94 @@ from starlette.concurrency import run_in_threadpool
 from admin.db import get_db
 from admin.models import Account, ApiKey, UsageLog, RequestAudit
 from admin.security import require_admin, verify_admin_token
+
+
+_stats_cache_lock = threading.Lock()
+_stats_cache = OrderedDict()
+_STATS_CACHE_TTL = 5.0
+_STATS_CACHE_MAX = 64
+#: 单条最重的 IP 聚合查询，重复访问给更长的复用窗口。
+_STATS_CACHE_TTL_HEAVY = 20.0
+#: 同一个 key 正在重算时，后来者等它的结果而不是各自再打一遍库。
+#: 2 核机器上并发重算同一条聚合查询会把单次 200ms 拖到 1s 以上。
+_stats_inflight = {}
+_stats_inflight_lock = threading.Lock()
+
+
+def _stats_cache_key(kind, values):
+    return kind, json.dumps(values, sort_keys=True, default=str, separators=(',', ':'))
+
+
+def _stable_window_start(start, days):
+    """Quantise the derived window start so repeated requests share a cache key.
+
+    ``datetime.utcnow() - timedelta(days=1)`` changes on every call, which made
+    every request a cache miss and defeated single-flight entirely. Rounding to
+    the minute keeps the numbers honest while letting identical panel refreshes
+    reuse one aggregation.
+    """
+    if start:
+        return start
+    if not days or days <= 0:
+        return None
+    window = datetime.utcnow() - timedelta(days=min(days, 3650))
+    return window.replace(second=0, microsecond=0)
+
+
+def _stats_cache_get(key):
+    now = time.monotonic()
+    with _stats_cache_lock:
+        entry = _stats_cache.get(key)
+        if entry is None:
+            return None
+        expires, value = entry
+        if expires <= now:
+            _stats_cache.pop(key, None)
+            return None
+        _stats_cache.move_to_end(key)
+        return copy.deepcopy(value)
+
+
+def _stats_cache_put(key, value, ttl=None):
+    with _stats_cache_lock:
+        _stats_cache[key] = (time.monotonic() + (_STATS_CACHE_TTL if ttl is None else ttl),
+                             copy.deepcopy(value))
+        _stats_cache.move_to_end(key)
+        while len(_stats_cache) > _STATS_CACHE_MAX:
+            _stats_cache.popitem(last=False)
+
+
+def _cached_stats(key, compute, ttl=None):
+    """Single-flight cached aggregation: concurrent identical reads share one run.
+
+    ``compute`` must be pure SQL work — it may run on the caller's session, so
+    a leader that fails just lets the next caller retry.
+    """
+    cached = _stats_cache_get(key)
+    if cached is not None:
+        return cached
+    with _stats_inflight_lock:
+        pending = _stats_inflight.get(key)
+        leader = pending is None
+        if leader:
+            pending = _stats_inflight[key] = threading.Event()
+    if not leader:
+        # Bounded: the leader's own query is already time-limited by the request
+        # deadline, and a broken leader always releases this event.
+        pending.wait(timeout=30.0)
+        cached = _stats_cache_get(key)
+        if cached is not None:
+            return cached
+        # Leader failed or timed out; fall through and compute independently.
+    try:
+        value = compute()
+    finally:
+        if leader:
+            with _stats_inflight_lock:
+                _stats_inflight.pop(key, None)
+            pending.set()
+    _stats_cache_put(key, value, ttl)
+    return value
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 
@@ -82,6 +172,8 @@ def _activity_probe(db: Session, key: Optional[str], limit: int,
                 and (ids is None or record['key_id'] in ids))
     def live(record):
         return {'request_id': record['id'], 'key_id': record['key_id'],
+                'account_id': record.get('last_account_id'),
+                'client_ip': record.get('client_ip') or '',
                 'path': record['path'], 'model': record.get('requested_model', ''),
                 'started_at': record['started_at'], 'status': record.get('status'),
                 'outcome': record['outcome'], 'elapsed_ms': record['elapsed_ms'],
@@ -94,6 +186,8 @@ def _activity_probe(db: Session, key: Optional[str], limit: int,
         query = query.filter(RequestAudit.api_key_id.in_(ids))
     rows = query.order_by(RequestAudit.started_at.desc(), RequestAudit.id.desc()).limit(limit).all()
     completed = {r.request_id: {'request_id': r.request_id, 'key_id': r.api_key_id,
+                 'account_id': r.account_id,
+                 'client_ip': r.client_ip or '',
                  'path': r.path, 'model': r.model, 'started_at': r.started_at.isoformat()+'Z',
                  'status': r.status, 'outcome': r.outcome, 'elapsed_ms': r.elapsed_ms,
                  'phase': r.phase, 'reason': r.reason, 'upstream_attempts': r.upstream_attempts}
@@ -103,9 +197,12 @@ def _activity_probe(db: Session, key: Optional[str], limit: int,
         if visible(record):
             completed.setdefault(record['id'], live(record))
     finished = sorted(completed.values(), key=lambda r: r['started_at'], reverse=True)[:limit]
-    key_names, _ = _name_maps(db, {r['key_id'] for r in active + finished}, set())
+    key_names, account_names = _name_maps(db, {r['key_id'] for r in active + finished},
+                                        {r['account_id'] for r in active + finished if r.get('account_id')})
     for row in active + finished:
         row['key_name'] = key_names[row['key_id']]
+        aid = row.get('account_id')
+        row['account_name'] = account_names.get(aid) or (f'账号 #{aid}' if aid else '')
     return {'active': active[:100], 'active_count': snapshot['active_count'], 'recent': finished,
             'usage_revision': usage_revision,
             'active_scope': 'process', 'history_persistent': True}
@@ -116,6 +213,41 @@ def request_activity(key: Optional[str] = None, limit: int = 40, include_history
                      _: bool = Depends(require_admin), db: Session = Depends(get_db)):
     """Show in-flight inference and outcomes that need not have billable usage."""
     return _activity_probe(db, key, limit, include_history)
+
+
+_activity_sample_cache = {}
+_activity_sample_lock = threading.Lock()
+
+
+def _activity_sample(key: Optional[str], limit: int) -> dict:
+    """Let one execution serve several callers that ask at the same instant.
+
+    Deliberately does NOT keep a time-based cache: the stream must still sample
+    on its own schedule, otherwise "no database queries while idle" would turn
+    into stale frames. This only collapses the momentary double-run when several
+    tabs sample together on a two-core box.
+    """
+    flight_key = (key or '', int(limit))
+    with _activity_sample_lock:
+        entry = _activity_sample_cache.get(flight_key)
+        leader = entry is None
+        if leader:
+            entry = _activity_sample_cache[flight_key] = {'event': threading.Event()}
+    if not leader:
+        entry['event'].wait(timeout=_ACTIVITY_STREAM_SAMPLE_TTL)
+        shared = entry.get('payload')
+        if shared is not None:
+            return copy.deepcopy(shared)
+    payload = None
+    try:
+        payload = _activity_fetch(key, limit)
+        return payload
+    finally:
+        if leader:
+            entry['payload'] = payload
+            with _activity_sample_lock:
+                _activity_sample_cache.pop(flight_key, None)
+            entry['event'].set()
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +266,13 @@ def request_activity(key: Optional[str] = None, limit: int = 40, include_history
 # abort，服务端立刻停采样。
 _ACTIVITY_STREAM_HEARTBEAT = 15.0       # 秒：无变化时的心跳间隔
 _ACTIVITY_STREAM_TICK = 0.5             # 秒：内存指纹比较间隔（无 SQL）
-_ACTIVITY_STREAM_REFRESH = 10.0         # 秒：即使内存没变，也重新对一次库
+#: 内存指纹没变时的兜底对库间隔。这里做两件事：读一条 request_audits 的
+#: 尾巴、以及 usage_logs 的主键最大值。原来 10 秒一次，在 2 核机器上和
+#: 面板其它查询抢 CPU；30 秒足够发现“有别处写入”，而真正的变化走内存指纹
+#: 立刻推送，不依赖这个兜底。
+_ACTIVITY_STREAM_REFRESH = 30.0
+#: 多开标签页时每个连接都会查库。同一条推送查询在这么多秒内复用结果。
+_ACTIVITY_STREAM_SAMPLE_TTL = 5.0
 _ACTIVITY_STREAM_MAX_SECONDS = 30 * 60  # 单连接上限，到点让前端换票重连
 _STREAM_TICKET_TTL = 120.0              # 推送票据有效期（秒）
 _STREAM_TICKET_LIMIT = 256              # 票据总量上限（纯内存结构，必须有界）
@@ -185,9 +323,10 @@ def _activity_signature(payload: dict) -> str:
     for r in payload.get('active') or []:
         parts.append('a%s:%s:%s:%s' % (r.get('request_id'), r.get('phase'),
                                        int(r.get('elapsed_ms') or 0) // 1000,
-                                       r.get('status')))
+                                       str(r.get('status')) + ':' + str(r.get('account_id'))))
     for r in payload.get('recent') or []:
-        parts.append('r%s:%s:%s' % (r.get('request_id'), r.get('outcome'), r.get('status')))
+        parts.append('r%s:%s:%s:%s' % (r.get('request_id'), r.get('outcome'),
+                                       r.get('status'), r.get('account_id')))
     return '|'.join(parts)
 
 
@@ -281,7 +420,7 @@ async def request_activity_stream(
                         last_mem = live
                         last_db = now
                         try:
-                            payload = await run_in_threadpool(_activity_fetch, key, limit)
+                            payload = await run_in_threadpool(_activity_sample, key, limit)
                         except Exception:
                             # 数据库短暂不可用不该让面板永远空白：发一帧空结果。
                             payload = {'active': [], 'active_count': 0, 'recent': [],
@@ -388,7 +527,13 @@ def _build_filters(q, *, key_id, account_ids, models, model, key, account,
             return q, True
         q = q.filter(UsageLog.account_id.in_(aids))
     if client_ip:
-        q = q.filter(UsageLog.client_ip.like(f"%{client_ip}%"))
+        from admin.client_ip import normalize_ip
+        try:
+            normalized = normalize_ip(client_ip)
+        except ValueError:
+            normalized = None
+        q = q.filter(UsageLog.client_ip == normalized) if normalized else q.filter(
+            UsageLog.client_ip.contains(client_ip, autoescape=True))
     def timestamp(value):
         if not isinstance(value, str):
             return value
@@ -489,9 +634,17 @@ def list_logs(
     total = None
     stats = None
     if with_total and before_id is None:
-        total, successes = q.with_entities(func.count(UsageLog.id), func.coalesce(func.sum(case(
-            (func.coalesce(UsageLog.error_kind, "").in_(("", "success")), 1), else_=0)), 0)).one()
-        stats = {"total": total, "success": int(successes), "error": total - int(successes)}
+        cache_key = _stats_cache_key('list_total', (
+            key_id, account_id, model, key, account, client_ip, start, end, result))
+        stats = _stats_cache_get(cache_key)
+        if stats is None:
+            total, successes = q.with_entities(func.count(UsageLog.id), func.coalesce(func.sum(case(
+                (func.coalesce(UsageLog.error_kind, "").in_(("", "success")), 1), else_=0)), 0)).one()
+            total = int(total or 0)
+            successes = int(successes or 0)
+            stats = {"total": total, "success": successes, "error": total - successes}
+            _stats_cache_put(cache_key, stats)
+        total = stats['total']
 
     # keyset 分页优先；否则退回 OFFSET
     if before_id is not None:
@@ -552,7 +705,7 @@ def export_logs(
     name_term = account if not account_id else None
 
     q, short = _build_filters(
-        db.query(UsageLog) if diagnostics else db.query(UsageLog).options(defer(UsageLog.diagnostic_json)),
+        db.query(UsageLog).options(*([] if diagnostics else [defer(UsageLog.diagnostic_json)])),
         key_id=key_id, account_ids=account_ids, models=None, model=model,
         key=key, account=name_term,
         client_ip=client_ip, start=start, end=end, db=db, result=result,
@@ -617,6 +770,10 @@ def log_accounts(
     附带每个账号的请求数 / 积分 / 最近使用时间，让用户在**选之前**
     就知道哪个号有数据、值不值得点进去看。
     """
+    cache_key = _stats_cache_key('accounts', (days,))
+    cached = _stats_cache_get(cache_key)
+    if cached is not None:
+        return cached
     since = datetime.utcnow() - timedelta(days=max(1, days))
     rows = (
         db.query(
@@ -641,7 +798,7 @@ def log_accounts(
                 "balance_remain": int(a.balance_remain or 0),
                 "expiring_soon": int(a.credits_expiring_soon or 0),
             }
-    return {
+    result = {
         "range_days": days,
         "items": [
             {
@@ -658,6 +815,8 @@ def log_accounts(
             for aid, cnt, cr, last in rows
         ],
     }
+    _stats_cache_put(cache_key, result)
+    return result
 
 
 @router.get("/summary")
@@ -669,44 +828,127 @@ def log_summary(
     end: Optional[str] = None, result: Optional[str] = None,
     _: bool = Depends(require_admin), db: Session = Depends(get_db),
 ):
-    success = func.coalesce(UsageLog.error_kind, "").in_(("", "success"))
-    q = db.query(
-        UsageLog.account_id, func.count(UsageLog.id),
-        func.coalesce(func.sum(UsageLog.credits), 0.0),
-        func.coalesce(func.sum(UsageLog.total_tokens), 0),
-        func.coalesce(func.sum(UsageLog.prompt_tokens), 0),
-        func.coalesce(func.sum(UsageLog.completion_tokens), 0),
-        func.coalesce(func.sum(UsageLog.cached_tokens), 0),
-        func.avg(UsageLog.latency_ms), func.max(UsageLog.created_at),
-        func.coalesce(func.sum(case((success, 0), else_=1)), 0),
-    )
-    if not start and days > 0:
-        start = datetime.utcnow() - timedelta(days=days)
-    q, short = _build_filters(q, key_id=key_id,
-        account_ids=[account_id] if account_id is not None else None,
-        models=None, model=model, key=key, account=account,
-        client_ip=client_ip, start=start, end=end, db=db, result=result)
-    rows = [] if short else q.group_by(UsageLog.account_id).order_by(
-        func.coalesce(func.sum(UsageLog.credits), 0.0).desc()).all()
-    _, names = _name_maps(db, set(), {r[0] for r in rows if r[0]})
-    items = []
-    for aid, reqs, credits, ttok, ptok, ctok, cached, avg_lat, last, fails in rows:
-        items.append({
-            "account_id": aid,
-            "account_name": names.get(aid) or (f"#{aid}" if aid else "未记录账号 / 未选号"),
-            "requests": int(reqs), "failed_requests": int(fails),
-            "ok_requests": int(reqs - fails), "credits": round(float(credits), 4),
-            "total_tokens": int(ttok), "prompt_tokens": int(ptok),
-            "completion_tokens": int(ctok), "cached_tokens": int(cached),
-            "avg_latency_ms": int(avg_lat or 0),
-            "last_used_at": last.isoformat() if last else None,
-        })
-    return {"range_days": days, "total_requests": sum(i["requests"] for i in items),
-            "ok_requests": sum(i["ok_requests"] for i in items),
-            "failed_requests": sum(i["failed_requests"] for i in items),
-            "account_count": sum(1 for i in items if i["account_id"]),
-            "unattributed_requests": sum(i["requests"] for i in items if not i["account_id"]),
-            "total_credits": round(sum(i["credits"] for i in items), 4), "items": items}
+    window_start = _stable_window_start(start, days)
+    cache_key = _stats_cache_key('summary', (
+        days, account_id, key_id, model, key, account, client_ip, window_start, end, result))
+
+    def compute():
+        success = func.coalesce(UsageLog.error_kind, "").in_(("", "success"))
+        q = db.query(
+            UsageLog.account_id, func.count(UsageLog.id),
+            func.coalesce(func.sum(UsageLog.credits), 0.0),
+            func.coalesce(func.sum(UsageLog.total_tokens), 0),
+            func.coalesce(func.sum(UsageLog.prompt_tokens), 0),
+            func.coalesce(func.sum(UsageLog.completion_tokens), 0),
+            func.coalesce(func.sum(UsageLog.cached_tokens), 0),
+            func.avg(UsageLog.latency_ms), func.max(UsageLog.created_at),
+            func.coalesce(func.sum(case((success, 0), else_=1)), 0),
+        )
+        q, short = _build_filters(q, key_id=key_id,
+            account_ids=[account_id] if account_id is not None else None,
+            models=None, model=model, key=key, account=account,
+            client_ip=client_ip, start=window_start, end=end, db=db, result=result)
+        rows = [] if short else q.group_by(UsageLog.account_id).order_by(
+            func.coalesce(func.sum(UsageLog.credits), 0.0).desc()).all()
+        _, names = _name_maps(db, set(), {r[0] for r in rows if r[0]})
+        items = []
+        for aid, reqs, credits, ttok, ptok, ctok, cached_tokens, avg_lat, last, fails in rows:
+            items.append({
+                "account_id": aid,
+                "account_name": names.get(aid) or (f"#{aid}" if aid else "未记录账号 / 未选号"),
+                "requests": int(reqs), "failed_requests": int(fails),
+                "ok_requests": int(reqs - fails), "credits": round(float(credits), 4),
+                "total_tokens": int(ttok), "prompt_tokens": int(ptok),
+                "completion_tokens": int(ctok), "cached_tokens": int(cached_tokens),
+                "avg_latency_ms": int(avg_lat or 0),
+                "last_used_at": last.isoformat() if last else None,
+            })
+        return {"range_days": days, "total_requests": sum(i["requests"] for i in items),
+                "ok_requests": sum(i["ok_requests"] for i in items),
+                "failed_requests": sum(i["failed_requests"] for i in items),
+                "account_count": sum(1 for i in items if i["account_id"]),
+                "unattributed_requests": sum(i["requests"] for i in items if not i["account_id"]),
+                "total_credits": round(sum(i["credits"] for i in items), 4), "items": items}
+
+    return _cached_stats(cache_key, compute)
+
+
+@router.get("/ip-summary")
+def log_ip_summary(
+    key_id: Optional[int] = None, account_id: Optional[int] = None,
+    model: Optional[str] = None, key: Optional[str] = None,
+    account: Optional[str] = None, client_ip: Optional[str] = None,
+    start: Optional[str] = None, end: Optional[str] = None,
+    result: Optional[str] = None, low_tokens: int = 100,
+    min_requests: int = 1, sort: str = "requests", limit: int = 50, days: int = 1,
+    _: bool = Depends(require_admin), db: Session = Depends(get_db),
+):
+    """Filtered usage, not ingress: unknown token counts never mean zero."""
+    low_tokens = max(0, min(1000000, low_tokens))
+    min_requests = max(1, min(1000000, min_requests))
+    limit = max(1, min(100, limit))
+    start = _stable_window_start(start, days)
+    cache_key = _stats_cache_key('ip_summary', (
+        key_id, account_id, model, key, account, client_ip, start, end, result,
+        low_tokens, min_requests, sort, limit))
+
+    def compute():
+        requests = func.count(UsageLog.id).label('requests')
+        known = func.count(UsageLog.total_tokens).label('known')
+        credits = func.coalesce(func.sum(UsageLog.credits), 0).label('credits')
+        tokens = func.sum(UsageLog.total_tokens).label('tokens')
+        average = func.avg(UsageLog.total_tokens).label('avg_tokens')
+        low = func.sum(case((UsageLog.total_tokens <= low_tokens, 1), else_=0)).label('low')
+        zero = func.sum(case((UsageLog.total_tokens == 0, 1), else_=0)).label('zero')
+        failed = func.sum(case((func.coalesce(UsageLog.error_kind, '').in_(('', 'success')), 0), else_=1))
+        q = db.query(UsageLog.client_ip, requests, known, credits, tokens, average, low, zero,
+                     failed.label('failed'), func.max(UsageLog.created_at).label('last'))
+        q, short = _build_filters(q, key_id=key_id,
+            account_ids=[account_id] if account_id is not None else None,
+            models=None, model=model, key=key, account=account if account_id is None else None,
+            client_ip=client_ip, start=start, end=end, db=db, result=result)
+        orders = {'requests': requests.desc(), 'low_tokens': low.desc(),
+                  'avg_tokens': average.asc(), 'credits': credits.asc()}
+        if sort not in orders:
+            raise HTTPException(400, "IP 排序方式无效")
+        order = [orders[sort], requests.desc(), UsageLog.client_ip.asc()]
+        if sort == 'avg_tokens':
+            order.insert(0, case((known == 0, 1), else_=0))
+        rows = [] if short else q.group_by(UsageLog.client_ip).having(requests >= min_requests).order_by(
+            *order).limit(limit + 1).all()
+        items = []
+        for r in rows[:limit]:
+            items.append({'client_ip': r.client_ip or '', 'requests': int(r.requests),
+                'known_usage_requests': int(r.known), 'missing_usage_requests': int(r.requests-r.known),
+                'total_tokens': int(r.tokens) if r.tokens is not None else None,
+                'avg_tokens': round(float(r.avg_tokens), 1) if r.avg_tokens is not None else None,
+                'low_token_requests': int(r.low), 'zero_token_requests': int(r.zero),
+                'credits': round(float(r.credits), 4), 'avg_credits': round(float(r.credits)/r.requests, 6),
+                'failed_requests': int(r.failed), 'last_used_at': r.last.isoformat() if r.last else None})
+        return {'items': items, 'has_more': len(rows) > limit, 'low_tokens': low_tokens,
+                'min_requests': min_requests, 'limit': limit, 'sort': sort}
+
+    return _cached_stats(cache_key, compute, ttl=_STATS_CACHE_TTL_HEAVY)
+
+
+@router.get("/capture/settings")
+def capture_settings(_=Depends(require_admin)):
+    from admin.request_payload import status
+    return status()
+
+
+@router.put("/capture/settings")
+def update_capture_settings(body: dict = Body(...), _=Depends(require_admin)):
+    from admin.request_payload import configure
+    if set(body) != {'enabled'} or type(body.get('enabled')) is not bool:
+        raise HTTPException(400, "enabled 必须为布尔值")
+    return configure(body['enabled'])
+
+
+@router.delete("/capture/cache")
+def clear_capture_cache(_=Depends(require_admin)):
+    from admin.request_payload import clear
+    return clear()
 
 
 @router.get("/{log_id}")
@@ -716,8 +958,47 @@ def log_detail(log_id: int, db: Session = Depends(get_db), _=Depends(require_adm
         raise HTTPException(status_code=404, detail="使用记录不存在")
     keys, accounts = _name_maps(db, {row.api_key_id}, {row.account_id})
     item = _serialize([row], keys, accounts)[0]
+    from admin.request_payload import get
+    item['request_capture'] = get(log_id, include_bodies=False)
     try:
         item["diagnostic"] = json.loads(row.diagnostic_json) if row.diagnostic_json else None
     except (TypeError, ValueError):
         item["diagnostic"] = None
     return item
+
+
+@router.get("/{log_id}/capture/body")
+def capture_body(log_id: int, part: str = Query(default='ingress', max_length=32),
+                 offset: int = Query(default=0, ge=0), limit: int = Query(default=65536, ge=4, le=65536),
+                 response: Response = None, db: Session = Depends(get_db), _=Depends(require_admin)):
+    if not db.query(UsageLog.id).filter(UsageLog.id == log_id).first():
+        raise HTTPException(404, '使用记录不存在')
+    from admin.request_payload import body_page
+    page = body_page(log_id, part, offset, limit)
+    if page is None:
+        raise HTTPException(404, '请求正文缓存已过期或不可用')
+    if response is not None:
+        response.headers['Cache-Control']='no-store'
+        response.headers['X-Content-Type-Options']='nosniff'
+    return page
+
+
+@router.get("/{log_id}/capture/download")
+def download_capture(log_id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+    item = log_detail(log_id, db, True)
+    from admin.request_payload import get
+    capture = get(log_id)
+    item.pop('request_capture', None)
+    diagnostic = item.pop('diagnostic', None)
+    def rows():
+        yield json.dumps({'type': 'usage', **item}, ensure_ascii=False)+'\n'
+        if capture:
+            yield json.dumps({'type': 'capture', 'captured_at': capture['captured_at'],
+                              'upstream_omitted': capture['upstream_omitted']})+'\n'
+            yield json.dumps({'type': 'ingress', **capture['ingress']}, ensure_ascii=False)+'\n'
+            for attempt in capture['upstream']:
+                yield json.dumps({'type': 'upstream_attempt', **attempt}, ensure_ascii=False)+'\n'
+        yield json.dumps({'type': 'diagnostic', 'data': diagnostic}, ensure_ascii=False)+'\n'
+    return StreamingResponse(rows(), media_type='application/x-ndjson',
+        headers={'Content-Disposition': f'attachment; filename="wb2api-usage-{log_id}.jsonl"',
+                 'Cache-Control': 'no-store'})

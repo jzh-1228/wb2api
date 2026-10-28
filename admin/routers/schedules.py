@@ -15,17 +15,18 @@ from admin.schedule_timing import ScheduleTiming, timing_of, next_run_at, cycle_
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
 TASK_CHOICES = ["refresh_balances", "refresh_credits", "sync_models", "daily_checkin",
-                "refresh_growth_tasks", "run_growth_tasks", "run_growth_plan", "keepalive_tokens", "claim_benefits"]
+                "refresh_growth_tasks", "run_growth_tasks", "run_growth_plan", "keepalive_tokens",
+                "ban_recheck"]
 TASK_LABELS = {
     "refresh_balances": "刷新平台总积分",
     "refresh_credits": "更新积分到期快照",
     "sync_models": "同步模型列表",
     "daily_checkin": "签到领取积分",
-    "claim_benefits": "检查并领取权益",
     "refresh_growth_tasks": "更新成长任务列表",
     "run_growth_tasks": "自动做成长任务",
     "run_growth_plan": "WorkBuddy 成长计划巡检",
     "keepalive_tokens": "token 保活刷新",
+    "ban_recheck": "风控封号复核与自动解封",
 }
 
 

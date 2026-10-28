@@ -19,7 +19,7 @@ NODE_SOURCES = [f"https://npmmirror.com/mirrors/node/v{NODE_VERSION}/{NODE_ARCHI
 
 
 def download(url: str, target: Path, progress=None, max_bytes=300 * 1024 * 1024) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "WorkBuddy2API-Desktop"})
+    request = urllib.request.Request(url, headers={"User-Agent": "wb2api-Desktop"})
     digest = hashlib.sha256()
     done = 0
     with urllib.request.urlopen(request, timeout=30) as response, target.open("wb") as out:

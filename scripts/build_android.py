@@ -76,18 +76,19 @@ def prepare() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
     for name in ("upstream_compat.py", "anthropic_adapter.py", "responses_adapter.py",
-                 "responses_projection.py", "desensitize.py", "wb_install.py", "converter.py", "model_metadata.py"):
+                 "responses_projection.py", "desensitize.py", "repository_instructions.py", "wb_install.py", "converter.py", "model_metadata.py"):
         shutil.copy2(ROOT / name, staging / name)
     (staging / "desktop/assets").mkdir(parents=True)
     for name in ("__init__.py", "common.py", "runtime.py", "updates.py"):
         shutil.copy2(ROOT / "desktop" / name, staging / "desktop" / name)
     shutil.copy2(ROOT / "desktop/assets/app.svg", staging / "desktop/assets/app.svg")
     metadata = json.loads((ROOT / "desktop/version.json").read_text(encoding="utf-8"))
-    metadata["asset"] = "WorkBuddy2API-{version}-android-arm64.apk"
+    metadata["asset"] = "wb2api-{version}-android-arm64.apk"
     (staging / "desktop/version.json").write_text(json.dumps(metadata), encoding="utf-8")
     shutil.copytree(ROOT / "admin/static", staging / "admin/static")
+    shutil.copytree(ROOT / "admin/console", staging / "admin/console")
     shutil.copytree(ROOT / "admin/data", staging / "admin/data")
-    index = staging / "admin/static/index.html"
+    index = staging / "admin/console/index.html"
     index.write_text(mobile_html(index.read_text(encoding="utf-8")), encoding="utf-8")
     for name in ("mobile.js", "mobile.css", "mobile_settings.js"):
         shutil.copy2(ROOT / "android/web" / name, staging / "admin/static" / name)
@@ -136,7 +137,7 @@ def main() -> None:
         subprocess.run([keytool, "-genkeypair", "-keystore", str(keystore), "-storetype", "JKS",
                         "-storepass:env", "WB_ANDROID_STORE_PASSWORD", "-keypass:env", "WB_ANDROID_KEY_PASSWORD",
                         "-alias", "workbuddy2api", "-keyalg", "RSA", "-keysize", "3072",
-                        "-validity", "10000", "-dname", "CN=WorkBuddy2API Android"], env=env, check=True)
+                        "-validity", "10000", "-dname", "CN=wb2api Android"], env=env, check=True)
     tasks = ["assembleRelease", "lintRelease"]
     if args.with_debug:
         tasks.append("assembleDebug")
@@ -144,7 +145,7 @@ def main() -> None:
     version = json.loads((ROOT / "desktop/version.json").read_text(encoding="utf-8"))["version"]
     output = ROOT / "dist/android"
     output.mkdir(parents=True, exist_ok=True)
-    target = output / f"WorkBuddy2API-{version}-android-arm64.apk"
+    target = output / f"wb2api-{version}-android-arm64.apk"
     shutil.copy2(ROOT / "android/app/build/outputs/apk/release/app-release.apk", target)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     target.with_suffix(".apk.sha256").write_text(f"{digest}  {target.name}\n", encoding="ascii")

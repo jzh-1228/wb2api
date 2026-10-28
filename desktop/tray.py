@@ -232,7 +232,7 @@ class TrayController:
     # -- state ------------------------------------------------------------
 
     def _title(self) -> str:
-        return f"WorkBuddy2API · v{self.version} · {STATE_LABELS.get(self.state, self.state)}"
+        return f"wb2api · v{self.version} · {STATE_LABELS.get(self.state, self.state)}"
 
     def set_state(self, state: str) -> None:
         self.state = state
@@ -248,6 +248,6 @@ class TrayController:
         if self.icon is None:
             return
         try:
-            self.icon.notify(message, "WorkBuddy2API")
+            self.icon.notify(message, "wb2api")
         except Exception:
             logger.debug("Tray notify failed", exc_info=True)

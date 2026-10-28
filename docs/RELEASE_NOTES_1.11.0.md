@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.11.0
+# wb2api 1.11.0
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 本次更新优化 Windows 客户端与 Android App 的顶部布局、版本入口和启动更新提示，修复 DSH 已知身份句触发的 11128，并改进定时任务配置。
 
@@ -14,8 +16,8 @@
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | `WorkBuddy2API-1.11.0-windows-x64.exe` |
-| Android ARM64（Android 7.0 及以上） | `WorkBuddy2API-1.11.0-android-arm64.apk` |
+| Windows x64 | `***-1.11.0-windows-x64.exe` |
+| Android ARM64（Android 7.0 及以上） | `***-1.11.0-android-arm64.apk` |
 
 Windows 可使用新版 EXE 替换旧版；Android 使用同签名 APK 覆盖安装，保留原账号和配置。两个安装包均提供 `.sha256` 校验文件。
 

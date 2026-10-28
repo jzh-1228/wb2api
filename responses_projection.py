@@ -24,6 +24,8 @@ import json
 import re
 from typing import Any
 
+from repository_instructions import extract_repository_instructions
+
 
 AGENTIC_TOOL_NAMES = {
     "exec_command",
@@ -111,6 +113,7 @@ def project_responses_chat_body(body: dict) -> tuple[dict, dict]:
     """把 Responses 转出来的 Chat body 投影成更适合腾讯后端的最小上下文。"""
     projected = dict(body)
     messages = list(body.get("messages") or [])
+    messages, repository_guidance = _extract_repository_guidance(messages)
     tools = list(body.get("tools") or [])
 
     projected_tools, tool_stats = _project_tools(tools)
@@ -121,7 +124,7 @@ def project_responses_chat_body(body: dict) -> tuple[dict, dict]:
 
     aggressive = _looks_like_agentic_cli(messages, tools)
     if not aggressive:
-        projected["messages"] = _project_messages_conservative(messages)
+        projected["messages"] = repository_guidance + _project_messages_conservative(messages)
         return projected, {
             "mode": "conservative",
             "aggressive": False,
@@ -193,6 +196,7 @@ def project_responses_chat_body(body: dict) -> tuple[dict, dict]:
     guidance_message = _merge_guidance_messages(preserved_guidance)
     if guidance_message:
         final_messages.append({"role": "system", "content": guidance_message})
+    final_messages.extend(repository_guidance)
 
     history_summary = _build_history_summary(omitted, tool_name_by_call_id)
     if history_summary:
@@ -218,6 +222,32 @@ def project_responses_chat_body(body: dict) -> tuple[dict, dict]:
         "projected_message_chars": _messages_size(final_messages),
         **tool_stats,
     }
+
+
+def _extract_repository_guidance(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    cleaned, guidance = [], []
+    for message in messages:
+        if not isinstance(message, dict) or message.get('role') not in ('system', 'developer', 'user'):
+            cleaned.append(message)
+            continue
+        content = message.get('content')
+        instructions = []
+        if isinstance(content, str):
+            content, instructions = extract_repository_instructions(content)
+        elif isinstance(content, list):
+            blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    text, extracted = extract_repository_instructions(block.get('text', ''))
+                    instructions.extend(extracted)
+                    blocks.append(dict(block, text=text))
+                else:
+                    blocks.append(block)
+            content = blocks
+        cleaned.append(dict(message, content=content))
+        if instructions:
+            guidance.append({'role': message['role'], 'content': '\n\n'.join(instructions)})
+    return cleaned, guidance
 
 
 def _looks_like_agentic_cli(messages: list[dict], tools: list[dict]) -> bool:

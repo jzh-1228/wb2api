@@ -191,6 +191,9 @@ def push(
         "release_date_ms": eff.get("release_date_ms"),
         "turing_channel_id": eff.get("turing_channel_id"),
         "turing_product_name": eff.get("turing_product_name"),
+        # 官方内嵌 SDK 指纹（X-Stainless-* 用）：Node 运行时版本 + SDK 版本
+        "node_version": eff.get("node_version"),
+        "stainless_package_version": eff.get("stainless_package_version"),
         "headers": eff.get("headers") or {},
     }
     profile_payload = {k: v for k, v in profile_payload.items()

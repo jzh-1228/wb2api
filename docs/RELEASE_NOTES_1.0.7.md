@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.0.7
+# wb2api 1.0.7
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 ## 更新内容
 
@@ -21,6 +23,6 @@
 
 ## 安装与升级
 
-- Android：下载 `WorkBuddy2API-1.0.7-android-arm64.apk`，直接覆盖升级。
-- Windows：关闭旧版后运行 `WorkBuddy2API-1.0.7-windows-x64.exe`。
+- Android：下载 `***-1.0.7-android-arm64.apk`，直接覆盖升级。
+- Windows：关闭旧版后运行 `***-1.0.7-windows-x64.exe`。
 - 保留原有账号与配置，无需卸载或清除应用数据。两个安装包均附带 `.sha256` 校验文件。

@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.13.0
+# wb2api 1.13.0
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 本次正式版修复定时任务中的专家体验任务与账号保活，完善请求状态、账号用量统计，以及 Windows / Android 客户端的参数同步和文件导出。
 
@@ -15,8 +17,8 @@
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | [WorkBuddy2API-1.13.0-windows-x64.exe](https://github.com/xiaofan6ya/workbuddy2api/releases/download/1.13.0/WorkBuddy2API-1.13.0-windows-x64.exe) |
-| Android ARM64（Android 7.0 及以上） | [WorkBuddy2API-1.13.0-android-arm64.apk](https://github.com/xiaofan6ya/workbuddy2api/releases/download/1.13.0/WorkBuddy2API-1.13.0-android-arm64.apk) |
+| Windows x64 | ***-1.13.0-windows-x64.exe（原链接已移除） |
+| Android ARM64（Android 7.0 及以上） | ***-1.13.0-android-arm64.apk（原链接已移除） |
 
 Windows 使用新版 EXE 更新；Android 使用同签名 APK 覆盖安装，保留账号与配置。两个安装包均附带 `.sha256` 校验文件。
 

@@ -231,42 +231,19 @@ class AccountSession:
     def get_headers(self, extra: dict | None = None) -> dict:
         return self.cm.get_headers(extra=extra)
 
-    def _compensation_request(self, operation: str) -> dict:
-        """Official website billing endpoints; both use an empty JSON body."""
-        paths = {"status": "/billing/meter/compensation-status",
-                 "claim": "/billing/meter/claim-compensation"}
-        headers = self.get_headers({"Origin": WEB_BASE,
-                                    "Referer": WEB_BASE + "/profile/plans-usage?action=addon"})
-        with self.http_client(timeout=15) as client:
-            response = client.post(WEB_BASE + paths[operation], headers=headers, json={})
-        try:
-            payload = response.json()
-        except ValueError:
-            return {"ok": False, "http": response.status_code, "code": None, "data": {}}
-        if not isinstance(payload, dict):
-            return {"ok": False, "http": response.status_code, "code": None, "data": {}}
-        data = payload.get("data")
-        safe = {key: data[key] for key in ("active", "claimed", "credit_num", "validity_period", "end_time")
-                if isinstance(data, dict) and key in data and isinstance(data[key], (str, int, float, bool, type(None)))}
-        code = payload.get("code")
-        code = code if type(code) is int else None
-        return {"ok": response.status_code == 200 and code == 0,
-                "http": response.status_code, "code": code, "data": safe}
-
-    def compensation_status(self) -> dict:
-        return self._compensation_request("status")
-
-    def claim_compensation(self) -> dict:
-        return self._compensation_request("claim")
-
     def fetch_models(self) -> list:
         return self.cm.fetch_models()
 
     def fetch_model_busy(self, models: list[str]) -> dict:
         """Official desktop endpoint: at most 50 models, five-second timeout."""
+        # The gateway cannot prove that the desktop-only profile headers belong
+        # to this server process, so leave this optional header set empty.
+        extra = {}
         with httpx.Client(timeout=5) as client:
-            response = client.post(f"{BACKEND}/v2/chat/busy", json={"models": models},
-                                   headers=self.get_headers(cprofile.risk_headers()))
+            headers = self.get_headers(extra)
+            response = self.cm._request_with_refresh(
+                client, "POST", f"{BACKEND}/v2/chat/busy", headers,
+                extra=extra, json_body={"models": models})
         response.raise_for_status()
         return response.json()
 
@@ -388,10 +365,9 @@ class AccountSession:
         url = f"{BACKEND}{path}"
         try:
             with self.http_client(timeout=15) as c:
-                if method.upper() == "GET":
-                    r = c.get(url, headers=headers)
-                else:
-                    r = c.post(url, headers=headers, json=body if body is not None else {})
+                r = self.cm._request_with_refresh(
+                    c, method, url, headers,
+                    json_body=body if body is not None else {})
         except Exception as e:
             return {"ok": False, "status": 0, "code": None, "msg": f"网络失败: {e}", "data": {}}
         try:
@@ -825,7 +801,7 @@ class AccountSession:
             "Authorization": "Bearer " + (self._sess_auth().get("accessToken") or ""),
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+            "User-Agent": _desktop_ua(),
             "Origin": BILL_BASE,
             "Referer": BILL_BASE + "/",
             "X-User-Id": self._uid(),
@@ -926,7 +902,7 @@ class AccountSession:
             "Authorization": "Bearer " + (self._sess_auth().get("accessToken") or ""),
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
+            "User-Agent": _desktop_ua(),
             "Origin": BILL_BASE,
             "Referer": BILL_BASE + "/",
             "X-User-Id": self._uid(),
@@ -1039,15 +1015,31 @@ class AccountSession:
     # 具体任务触发器
     # ------------------------------------------------------------------
 
-    def fire_expert_use(self, team_only: bool = False, keyword: str | None = None) -> dict:
+    def fire_expert_use(self, team_only: bool = False, keyword: str | None = None,
+                        expert_id: str | None = None) -> dict:
         """召唤专家任务：用真实专家 id 上报 expert_actual_use。
 
         每次调用取一个不同专家（按 uid 轮转，避免永远只报第一个）。
         target 次数由调用方循环完成。
+
+        expert_id：官方任务 deeplink 指定的活动专家（``expertId=ex_...``）。
+        活动专家不一定在市场列表里（2026-10-24 实测 4 个全不在），所以
+        先在市场列表里按 id 找（找到就有真实的分类/版本元数据），
+        找不到就用任务元数据里的 id + 名称直接上报 —— id 来自上游
+        任务定义，不是自造对象。
         """
         teams = team_only
-        experts = self.fetch_experts(team_only=teams, keyword=keyword, limit=50 if keyword else 12)
-        if keyword:
+        experts = self.fetch_experts(team_only=teams, keyword=keyword,
+                                     limit=50 if keyword else 12)
+        entry = None
+        if expert_id:
+            entry = next((e for e in experts
+                          if str(e["id"]) == str(expert_id)), None)
+            if entry is None:
+                entry = {"id": str(expert_id), "expertType": "agent",
+                         "name": keyword or str(expert_id),
+                         "category": "", "version": ""}
+        elif keyword:
             def normalized(name):
                 return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(name))).casefold()
             matches = {str(e["id"]): e for e in experts
@@ -1055,11 +1047,11 @@ class AccountSession:
             if len(matches) != 1:
                 return {"ok": False, "status": 0,
                         "msg": f"指定专家「{keyword}」精确匹配 {len(matches)} 个，未上报，留待下次"}
-            experts = list(matches.values())
-        if not experts:
+            entry = next(iter(matches.values()))
+        if entry is None and not experts:
             return {"ok": False, "status": 0,
                     "msg": "取不到真实专家 id，跳过（不自造）"}
-        e = experts[self._next_index(len(experts))]
+        e = entry or experts[self._next_index(len(experts))]
         now = int(time.time() * 1000)
         cid = str(uuid.uuid4())
         ev = {

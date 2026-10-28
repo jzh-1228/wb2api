@@ -180,6 +180,8 @@ class InFlight:
                 self._counts.pop(uid, None)
             else:
                 self._counts[uid] = cur - 1
+        from admin.capacity_queue import notify_capacity
+        notify_capacity()
 
     def count(self, uid: str) -> int:
         with self._lock:
@@ -204,6 +206,8 @@ class InFlight:
     def release_maintenance(self, uid: str) -> None:
         with self._lock:
             self._maintenance.discard(uid)
+        from admin.capacity_queue import notify_capacity
+        notify_capacity()
 
     def maintenance_count(self) -> int:
         with self._lock:
@@ -527,8 +531,11 @@ def weighted_pick(cands: list[dict], *, rand: random.Random | None = None,
         # 等权重洗牌：仅在存在并列时做，避免字典序截断造成饿死。
         eq = any(abs(w - weighted[0][1]) < WEIGHT_EPSILON for _, w in weighted[1:])
         if eq:
-            shuf = random.Random(time.monotonic_ns())
-            shuf.shuffle(weighted)
+            # Use the same injected RNG as the final weighted draw.  Seeding a
+            # fresh RNG from the clock for every call can repeat seeds on fast
+            # loops and leaves one of the tied accounts outside the shortlist.
+            # The module RNG is used for normal production calls.
+            (rand or random).shuffle(weighted)
             weighted.sort(key=lambda p: p[1], reverse=True)
         weighted = weighted[:TOP_N]
 
@@ -545,6 +552,28 @@ def weighted_pick(cands: list[dict], *, rand: random.Random | None = None,
         if r < acc:
             return c
     return weighted[-1][0]
+
+
+def expiry_weighted_pick(accounts, *, inflight=None, rand=None, now=None):
+    """Sample every healthy account using reciprocal expiry ranks.
+
+    Equal expiry keys share their average rank. Busy accounts keep a chance
+    instead of being removed before ranking, so this remains a weighted mode.
+    """
+    ordered = sorted(accounts, key=lambda a: expiry_key(a, now))
+    weights = []
+    start = 0
+    while start < len(ordered):
+        end = start + 1
+        key = expiry_key(ordered[start], now)
+        while end < len(ordered) and expiry_key(ordered[end], now) == key:
+            end += 1
+        rank = (start + 1 + end) / 2
+        for account in ordered[start:end]:
+            busy = inflight.count(account.uid or '') if inflight else 0
+            weights.append(1 / (rank * (1 + busy)))
+        start = end
+    return (rand or random).choices(ordered, weights=weights, k=1)[0] if ordered else None
 
 
 def pick_with_expiry_priority(cands: list[dict], *,

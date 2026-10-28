@@ -123,11 +123,31 @@ def _pick_free_model(db: Session) -> str:
     return row.model_id if row else "hy3"
 
 
+def _pick_candidates(db: Session) -> list[Account]:
+    """拉取任务定义的候选账号：健康号优先，按 id 稳定排序。
+
+    原来 `_pick_account` 永远返回 id 最小的 active 号 —— 那个号一旦 401
+    （登录态死了但还没被禁用），任务列表就永远拉不到，也不会换号
+    （线上实测：#4 长期霸占首选位，面板一直报 502）。这里改成：
+      1. 先过滤掉「已确证登录态失效 / 冷却中」的号；
+      2. 全都不健康时退回全部 active 兜底（总比直接 400 好）；
+    拉取侧（growth_tasks）再按顺序逐个尝试，一个失败自动换下一个。
+    """
+    from admin.routers.proxy import _looks_login_dead
+    rows = (db.query(Account)
+            .filter(Account.status == "active")
+            .order_by(Account.id.asc()).all())
+    now = datetime.utcnow()
+    healthy = [a for a in rows if not _looks_login_dead(a, now)
+               and not any(getattr(a, f) is not None and getattr(a, f) > now
+                           for f in ("cool_until", "breaker_until", "degrade_until"))]
+    return healthy or list(rows)
+
+
 def _pick_account(db: Session) -> Account | None:
     """挑一个可用账号（仅用于拉取任务定义，不写任何东西）。"""
-    return (db.query(Account)
-            .filter(Account.status == "active")
-            .order_by(Account.id.asc()).first())
+    candidates = _pick_candidates(db)
+    return candidates[0] if candidates else None
 
 
 def _classify_all(tasks: list[dict]) -> list[dict]:
@@ -162,20 +182,35 @@ def growth_tasks(refresh: bool = False, db: Session = Depends(get_db)):
         cached["cached"] = True
         return cached
 
-    acc = _pick_account(db)
+    acc = None
+    raw = None
+    last_error: Exception | None = None
+    for candidate in _pick_candidates(db):
+        acc = candidate
+        try:
+            with backend.AccountSession(acc.auth_json) as s:
+                raw = s.growth_tasks()
+            last_error = None
+            break
+        except Exception as e:
+            # 这个号拉不动（典型是 401 登录态失效）→ 记录状态机后换下一个。
+            # 不换号的话任务列表会永远卡在同一个死号上（线上实测过）。
+            last_error = e
+            try:
+                from admin import maintenance
+                maintenance.note_failure(db, acc, e)
+                db.commit()
+            except Exception:
+                db.rollback()
     if not acc:
         raise HTTPException(400, "没有可用账号，无法拉取任务列表")
-
-    try:
-        with backend.AccountSession(acc.auth_json) as s:
-            raw = s.growth_tasks()
-    except Exception as e:
-        # 拉取失败时退回旧缓存，避免面板整体不可用
+    if raw is None:
+        # 所有候选都失败 → 退回旧缓存，避免面板整体不可用
         if _task_cache.get("tasks"):
             stale = dict(_task_cache)
-            stale.update({"cached": True, "stale": True, "error": str(e)})
+            stale.update({"cached": True, "stale": True, "error": str(last_error)})
             return stale
-        raise HTTPException(502, f"拉取任务列表失败: {e}")
+        raise HTTPException(502, f"拉取任务列表失败: {last_error}")
 
     _task_cache.clear()
     _task_cache.update({

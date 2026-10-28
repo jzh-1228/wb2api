@@ -309,6 +309,9 @@ class PhoneLoginSession:
     lock: threading.RLock = field(default_factory=threading.RLock)
     #: 已成功换取的凭证（幂等复用；配合 lock 使用）。
     result_cache: dict | None = None
+    invite_code: str = ""
+    invitation_result: dict | None = None
+    official_token: dict | None = None
     #: 成功时刻（配合 GC 的宽限期，见 `_gc_locked`）。
     consumed_at: float = 0.0
 
@@ -434,7 +437,8 @@ def _gc_locked():
         if sess.expired():
             _sessions.pop(sid, None)
             sess.close()
-        elif sess.consumed and (now - sess.consumed_at) > _CONSUMED_GRACE_S:
+        elif (sess.consumed and not (sess.invite_code and sess.invitation_result is None)
+              and (now - sess.consumed_at) > _CONSUMED_GRACE_S):
             _sessions.pop(sid, None)
             sess.close()
 
@@ -567,6 +571,8 @@ def start_login() -> PhoneLoginSession:
     """
     sess = _new_session()
     try:
+        from admin.invitation import current
+        sess.invite_code = current()["invite_code"]
         # 1) 设备授权 state
         r = sess.client.post(
             f"{HOST}/v2/plugin/auth/state?platform=workbuddy", json={},
@@ -1247,6 +1253,8 @@ def start_official_login() -> PhoneLoginSession:
     """
     sess = _new_session()
     try:
+        from admin.invitation import current
+        sess.invite_code = current()["invite_code"]
         r = sess.client.post(
             f"{HOST}/v2/plugin/auth/state?platform=workbuddy", json={},
             headers=sess._headers({"Content-Type": "application/json",
@@ -1265,6 +1273,59 @@ def start_official_login() -> PhoneLoginSession:
 
     _register_session(sess)
     return sess
+
+
+def bind_invitation(sess: PhoneLoginSession, credential: str) -> dict:
+    """Submit the official binding request using the authenticated session."""
+    from admin.invitation import BIND_PATH, invite_url
+
+    if sess.invitation_result is not None:
+        return sess.invitation_result
+    if not sess.invite_code:
+        return {"status": "disabled", "message": "未配置邀请绑定"}
+    data = json.loads(credential)
+    try:
+        response = sess.client.post(
+            HOST + BIND_PATH, json={"inviteCode": sess.invite_code},
+            headers=sess._headers({
+                "Authorization": "Bearer " + data["auth"]["accessToken"],
+                "Content-Type": "application/json",
+                "X-Domain": urllib.parse.urlparse(HOST).netloc,
+                "X-User-Id": data["account"]["uid"],
+            }, referer=invite_url(sess.invite_code)))
+        obj = _upstream_json(response)
+    except (httpx.HTTPError, WbLoginError) as exc:
+        raise WbLoginError("邀请绑定结果未知，请重试当前注册会话", step="invitation_bind") from exc
+    code = obj.get("code")
+    outcomes = {
+        0: ("bound", "邀请绑定成功"),
+        12310: ("already_bound", "该账号已有邀请关系，上游未确认绑定到当前邀请码"),
+        12311: ("ineligible", "该账号不符合活动新用户条件，未绑定邀请"),
+    }
+    if response.status_code != 200 or type(code) is not int or code not in outcomes:
+        raise WbLoginError("邀请绑定未成功；可重试，或检查邀请码和活动状态后重新发起注册",
+                           step="invitation_bind", upstream={"code": code})
+    status, message = outcomes[code]
+    sess.invitation_result = {"status": status, "code": code, "message": message}
+    _logger.info("wb_login: invitation sid=%s status=%s code=%s", sess.sid[:8], status, code)
+    return sess.invitation_result
+
+
+def try_bind_invitation(sess: PhoneLoginSession, credential: str) -> dict:
+    """Invitation is optional; a failure must not undo a verified account import."""
+    try:
+        return bind_invitation(sess, credential)
+    except Exception as exc:
+        upstream = exc.upstream if isinstance(exc, WbLoginError) else None
+        code = upstream.get("code") if isinstance(upstream, dict) else None
+        code = code if type(code) is int else None
+        sess.invitation_result = {
+            "status": "failed", "code": code,
+            "message": "账号已录入，邀请绑定未完成，不影响账号使用",
+        }
+        _logger.warning("wb_login: invitation failed sid=%s code=%s error=%s; account retained",
+                        sess.sid[:8], code, type(exc).__name__)
+        return sess.invitation_result
 
 
 def gen_session_id() -> str:

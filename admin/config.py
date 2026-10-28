@@ -23,10 +23,21 @@ _logger = logging.getLogger(__name__)
 
 
 class Settings:
-    GATEWAY_WAIT_TIMEOUT = float(os.getenv("ADMIN_GATEWAY_WAIT_TIMEOUT", "180"))
+    LOG_REQUEST_PAYLOAD = os.getenv("ADMIN_LOG_REQUEST_PAYLOAD", "0") == "1"
+    PAYLOAD_MAX_MB = max(1, min(8, int(os.getenv("ADMIN_LOG_PAYLOAD_MAX_MB", "8"))))
+    # Admission waits are short; inference also has an absolute end-to-end deadline.
+    GATEWAY_WAIT_TIMEOUT = max(0.0, min(30.0, float(os.getenv("ADMIN_GATEWAY_WAIT_TIMEOUT", "15"))))
+    # Queueing for a slot is separate from waiting inside the request: the
+    # dispatcher and account selection still need room under peak load, but
+    # must stay well inside the whole-request deadline.
+    GATEWAY_QUEUE_TIMEOUT = max(0.0, min(115.0, float(os.getenv("ADMIN_GATEWAY_QUEUE_TIMEOUT", "90"))))
+    GATEWAY_REQUEST_TIMEOUT = max(1.0, min(160.0, float(os.getenv("ADMIN_GATEWAY_REQUEST_TIMEOUT", "160"))))
+    JOIN_MAX_CONCURRENT = max(1, int(os.getenv("ADMIN_JOIN_MAX_CONCURRENT", "4")))
     GATEWAY_RATE_PER_MINUTE = int(os.getenv("ADMIN_GATEWAY_RATE_PER_MINUTE", "60"))
     GATEWAY_MAX_CONCURRENT = int(os.getenv("ADMIN_GATEWAY_MAX_CONCURRENT", "4"))
     GATEWAY_LIMIT_BACKEND = os.getenv("ADMIN_GATEWAY_LIMIT_BACKEND", "auto").lower()
+    # Per-upstream-account start pacing is independent of per-key concurrency/RPM.
+    UPSTREAM_START_INTERVAL_MS = int(os.getenv("ADMIN_UPSTREAM_START_INTERVAL_MS", "75"))
     MAX_TOTAL_ATTEMPTS = int(os.getenv("ADMIN_POOL_MAX_TOTAL_ATTEMPTS", "6"))
     RETRY_WINDOW_SECONDS = float(os.getenv("ADMIN_POOL_RETRY_WINDOW", "90"))
     MODEL_DAILY_COOLDOWN_SECONDS = int(os.getenv("ADMIN_POOL_MODEL_DAILY_COOLDOWN", "86400"))
@@ -68,6 +79,8 @@ class Settings:
     # 服务监听
     HOST = os.getenv("ADMIN_HOST", "0.0.0.0")
     PORT = int(os.getenv("ADMIN_PORT", "8790"))
+    # Only these direct peers may supply X-Real-IP / X-Forwarded-For.
+    TRUSTED_PROXY_IPS = os.getenv("ADMIN_TRUSTED_PROXY_IPS", "127.0.0.1,::1")
 
     #: 是否对公网开放 OpenAPI 文档（`/docs`、`/redoc`、`/openapi.json`）
     #: 以及内嵌网关的 `/gw/docs`、`/gw/openapi.json`。
@@ -101,24 +114,19 @@ class Settings:
     # 计费：后端未回传 credits 时，按 total_tokens * 系数 / 1000 估算（系数单位为「每千 token 积分」）
     COST_PER_TOKEN = float(os.getenv("ADMIN_COST_PER_TOKEN", "0.01"))
 
-    # 上游记录客户端 IP 时使用的 header 名（若上游有自定义要求，如 X-Client-Ip / X-Real-IP 等）
-    # 为空则同时发送 X-Forwarded-For / X-Real-IP / X-Client-IP 等常见头
+    # 上游记录客户端 IP 时使用的 header 名（排障逃生门，默认关闭）。
+    # 官方客户端直连上游从不携带 X-Forwarded-For / X-Real-IP / X-Client-IP，
+    # 上游计量只看 Bearer 令牌 —— 主动带 IP 头反而是可识别的代理特征，
+    # 所以默认一律不发；仅当运维显式配置头名时才发送该头。
     UPSTREAM_CLIENT_HEADER = os.getenv("ADMIN_UPSTREAM_CLIENT_HEADER", "")
 
     # 上游请求用量「client」列显示的产品名。
     # 腾讯 CodeBuddy/WorkBuddy 后端通过 X-IDE-Name 头识别客户端，默认 "WorkBuddy"。
     UPSTREAM_CLIENT_NAME = os.getenv("ADMIN_UPSTREAM_CLIENT_NAME", "WorkBuddy")
 
-    # 账号选择策略：
-    #   oldest   最老录入优先（**默认**）—— 先用完老账号额度，避免积分过期作废
-    #   remain   剩余最多优先
-    #   lru      最久未用优先
-    #   weighted 三因子加权随机（余额 ×10 + 快过期 ×8 + 闲置补偿）
-    #
-    # 默认从 remain 改成 oldest：官方赠送积分**会过期作废**，老号离到期最近。
-    # 原来按余额最多选，会把流量持续压在新号上，老号的积分散在池子里等过期
-    # —— 用户的原话是「积分都快过期了为啥不先用」。
-    ACCOUNT_SELECT = os.getenv("ADMIN_ACCOUNT_SELECT", "oldest")
+    # Initial automatic strategy; console changes persist in SystemSetting.
+    # throughput / expiry_weighted / expiring / lru / weighted / remain / oldest
+    ACCOUNT_SELECT = os.getenv("ADMIN_ACCOUNT_SELECT", "expiry_weighted")
 
     # ---------- 开发 / 测试辅助工具 ----------
     #: 逆向产物（客户端源码）管理：后台一键拆包 app.asar、手动指定安装目录。
@@ -191,23 +199,38 @@ class Settings:
     #: 保活/批量任务里账号之间的最小间隔（秒），避免批量请求被识别为机器行为。
     KEEPALIVE_ACCOUNT_GAP = float(os.getenv("ADMIN_KEEPALIVE_ACCOUNT_GAP", "0.8"))
 
-    # ---------- 超时（关键：流式绝不设总时长） ----------
+    # ---------- 上游阶段超时（另有最多 160 秒的网关总时限） ----------
     #: 连接超时（秒）：连不上就快速换号，不让用户干等。
     STREAM_CONNECT_TIMEOUT = float(os.getenv("ADMIN_STREAM_CONNECT_TIMEOUT", "15"))
     #: 流式**静默**超时（秒）：两次数据之间的最大间隔。
-    #: 这是「只要上游在持续吐字，流就永不被我们自己掐断」的关键 ——
-    #: 它约束的是空闲，不是总时长。官方客户端源码里 Node 默认的 300s
-    #: 总时长 requestTimeout 会在流仍活跃时掐断 SSE，是必须避免的坑。
+    #: 它约束的是上游读空闲时间；网关另有 160 秒总时限，覆盖排队、上传、
+    #: 上游处理和客户端接收，避免单个阻塞请求长期占用账号与连接资源。
     STREAM_IDLE_TIMEOUT = float(os.getenv("ADMIN_STREAM_IDLE_TIMEOUT", "180"))
     #: 写入（上传 prompt）超时（秒）。
     STREAM_WRITE_TIMEOUT = float(os.getenv("ADMIN_STREAM_WRITE_TIMEOUT", "60"))
     #: 连接池等待超时（秒）：池子饱和就快速失败，交给上层退避，而不是无限排队。
     STREAM_POOL_TIMEOUT = float(os.getenv("ADMIN_STREAM_POOL_TIMEOUT", "20"))
 
-    # 登录防爆破：同一 IP 在窗口内失败超过阈值即锁定一段时间
+    # 登录防爆破：三个维度各自计数，任一到阈值即锁该维度（见 admin/ratelimit.py）
+    #   * (IP, 用户名) 对 —— 主维度：攻击者只锁「他的 IP × 他猜的用户名」；
+    #   * 同 IP 全局 —— 上限更高，兜住「换用户名撒网」的爆破总量；
+    #   * 指纹（可选）—— 客户端上报设备/浏览器指纹时额外收紧，不报则不启用。
+    # 窗口与锁时长三维度共用。这样任何人打错密码都锁不到真实管理员的 IP。
     LOGIN_MAX_ATTEMPTS = int(os.getenv("ADMIN_LOGIN_MAX_ATTEMPTS", "5"))
+    LOGIN_IP_MAX_ATTEMPTS = int(os.getenv("ADMIN_LOGIN_IP_MAX_ATTEMPTS", "0"))  # 0 = 自动取主维度阈值 ×3
     LOGIN_WINDOW_SECONDS = int(os.getenv("ADMIN_LOGIN_WINDOW_SECONDS", "300"))  # 5 分钟窗口
     LOGIN_LOCK_SECONDS = int(os.getenv("ADMIN_LOGIN_LOCK_SECONDS", "900"))      # 锁 15 分钟
+
+    # ---------- 风控封号自动复核（11140 等 account_fault）----------
+    #: 后台定时对「禁用/冷却中的风控号」做一次**真实模型调用**探测：
+    #: 探测通过 → 自动解封（恢复 active 并清计数）；仍 11140 → 按退避顺延下次复核。
+    #: 为什么必须真调模型：fetch_models / 余额接口对风控号常常照样放行，
+    #: 只有 craft 端点才反映「能不能用模型」。
+    BAN_RECHECK_ENABLED = os.getenv("ADMIN_BAN_RECHECK_ENABLED", "1") != "0"
+    #: 两次复核之间的最小间隔（秒），也是退避基数。
+    BAN_RECHECK_MIN_INTERVAL = int(os.getenv("ADMIN_BAN_RECHECK_MIN_INTERVAL", "1800"))
+    #: 复核退避封顶（秒）。持续 11140 的号最长 6 小时探一次，不再更密。
+    BAN_RECHECK_MAX_INTERVAL = int(os.getenv("ADMIN_BAN_RECHECK_MAX_INTERVAL", "21600"))
 
     # CORS：共享网关用 Authorization 头鉴权（无需 Cookie），故默认关闭 credentials；
     # 留空或 * 表示允许任意来源；如需限制可设 ADMIN_CORS_ORIGINS=https://a.com,https://b.com

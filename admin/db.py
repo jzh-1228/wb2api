@@ -113,6 +113,9 @@ def init_db() -> bool:
         from admin import models  # noqa: F401  确保模型已注册
 
         Base.metadata.create_all(bind=engine)
+        _ensure_column("request_audits", "account_id", "INT", "NULL")
+        _ensure_column("request_audits", "client_ip", "VARCHAR(64)", "DEFAULT ''")
+        _ensure_column("request_audits", "user_agent", "VARCHAR(512)", "DEFAULT ''")
 
         # 迁移：给 api_keys 表加 key_full 列（若不存在）
         _ensure_column("api_keys", "key_full", "VARCHAR(2048)", "DEFAULT ''")
@@ -201,6 +204,8 @@ def init_db() -> bool:
         _ensure_index("usage_logs", "ix_usage_logs_key_created", ("api_key_id", "created_at"))
         _ensure_index("usage_logs", "ix_usage_logs_model_created", ("model", "created_at"))
         _ensure_index("usage_logs", "ix_usage_logs_error_created", ("error_kind", "created_at"))
+        _ensure_index("usage_logs", "ix_usage_logs_ip_created", ("client_ip", "created_at"))
+        _ensure_index("request_audits", "ix_request_audit_ip_started", ("client_ip", "started_at"))
         _ensure_index("accounts", "ix_accounts_status", ("status",))
         _ensure_index("accounts", "ix_accounts_uid", ("uid",))
         _ensure_index("account_model_cool", "ix_account_model_cool_model_until", ("model", "until"))

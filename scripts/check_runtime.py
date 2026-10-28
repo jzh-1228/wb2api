@@ -30,27 +30,15 @@ def main():
         import fastapi
         import pydantic
         from fastapi.testclient import TestClient
-        from pydantic import ValidationError
         from admin.server import app
         from admin.db import engine
-        from admin.routers.benefits import BatchIn
         from admin.security import create_admin_token
 
         try:
-            assert BatchIn(confirm=True).ids is None
-            assert BatchIn(ids=[]).ids == []
-            assert len(BatchIn(ids=list(range(5000))).ids) == 5000
-            for invalid in [list(range(5001)), ['invalid-account-id'], 'invalid-list']:
-                try:
-                    BatchIn(ids=invalid)
-                except ValidationError:
-                    pass
-                else:
-                    raise AssertionError('Invalid batch input accepted')
             with TestClient(app) as client:
                 assert client.get('/api/app/version').status_code == 200
                 assert client.get('/admin').status_code == 200
-                assert client.get('/static/model-metadata.js').status_code == 200
+                assert client.get('/static/join.html').status_code == 200
                 assert client.post('/v1/audio/transcriptions').status_code == 401
                 from zoneinfo import ZoneInfo
                 assert str(ZoneInfo('Asia/Shanghai')) == 'Asia/Shanghai'
@@ -60,13 +48,19 @@ def main():
                 shell_token = jwt.encode({'sub': settings.ADMIN_USERNAME, 'local_shell': True,
                                           'iat': 1}, settings.JWT_SECRET, algorithm='HS256')
                 assert client.get('/api/accounts', headers={'X-Admin-Token': shell_token}).status_code == 200
-                assert client.get('/api/benefits/compensation', headers=headers).status_code == 200
-                assert client.post('/api/benefits/compensation/batch', headers=headers,
-                                   json={'confirm': True, 'ids': list(range(5001))}).status_code == 422
-                assert client.post('/api/benefits/compensation/batch', headers=headers,
-                                   json={'confirm': False}).status_code == 400
+                assert client.post('/api/accounts/health-check-batch', headers=headers,
+                                   json={'account_ids': list(range(5001))}).status_code == 422
+                assert client.post('/api/accounts/health-check-batch',
+                                   json={}).status_code == 401
+                # The authenticated route must be registered without starting
+                # any upstream work when the isolated database has no accounts.
+                assert client.post('/api/accounts/health-check-batch', headers=headers,
+                                   json={}).status_code == 400
+                assert client.post('/api/accounts/999999/health-check',
+                                   headers=headers).status_code == 404
+                assert client.get('/api/benefits/compensation', headers=headers).status_code == 404
+                assert client.get('/static/index.html').status_code == 404
                 assert client.get('/api/accounts', headers=headers).status_code == 200
-                assert client.get('/api/benefits/compensation').status_code == 401
             print(f'Runtime startup and batch validation passed: FastAPI {fastapi.__version__}, '
                   f'Pydantic {pydantic.__version__}, Android={args.android}')
         finally:

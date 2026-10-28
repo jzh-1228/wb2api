@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.10.0
+# wb2api 1.10.0
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 本次更新把「用量日志 → 请求动态」从每 3 秒轮询改为服务端推送，并完善了账号到期排行的操作提示。
 
@@ -17,8 +19,8 @@
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | `WorkBuddy2API-1.10.0-windows-x64.exe` |
-| Android ARM64（Android 7.0 及以上） | `WorkBuddy2API-1.10.0-android-arm64.apk` |
+| Windows x64 | `***-1.10.0-windows-x64.exe` |
+| Android ARM64（Android 7.0 及以上） | `***-1.10.0-android-arm64.apk` |
 
 Windows 使用新版 EXE 覆盖安装；安卓使用同签名 APK 覆盖安装，可保留账号与配置。两个安装包均提供对应的 `.sha256` 校验文件。
 

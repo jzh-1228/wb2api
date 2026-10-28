@@ -2,6 +2,7 @@
 from collections import deque
 import asyncio
 import anyio
+import json
 import logging
 import math
 import random
@@ -10,11 +11,14 @@ import threading
 import time
 
 from admin.config import settings
+from admin.security import GatewayRejected, check_key_current
 
 _lock = threading.Lock()
 _windows = {}
 _active = {}
 _waiters = {}
+_total_waiters = 0
+_signals = {}
 _redis = None
 _redis_initialized = False
 _redis_lock = threading.Lock()
@@ -136,11 +140,22 @@ def allow(key, rate=None, concurrent=None):
     return Admission(key)
 
 
+def _notify_release(key):
+    with _lock:
+        signals = list(_signals.get(key, ()))
+    for loop, event in signals:
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass
+
+
 def release(admission):
     if not admission or not admission.key:
         return
     if admission.client is not None:
         admission.client.zrem(_keys(admission.key)[1], admission.token)
+        _notify_release(admission.key)
         return
     with _lock:
         if admission.released:
@@ -153,6 +168,7 @@ def release(admission):
             _active[admission.key] = current - 1
         if admission.key in _windows and not _windows[admission.key]:
             _windows.pop(admission.key, None)
+    _notify_release(admission.key)
 
 
 def snapshot():
@@ -212,11 +228,37 @@ async def _finish_thread(fn, *args):
 
 
 class GatewayAdmissionMiddleware:
-    def __init__(self, app, wait_timeout=0, max_waiters_per_key=32, max_waiters=512):
+    def __init__(self, app, wait_timeout=None, max_waiters_per_key=8, max_waiters=128,
+                 request_timeout=None, dynamic_settings=False):
         self.app = app
-        self.wait_timeout = max(0, float(wait_timeout))
+        self._wait_timeout_dynamic = bool(dynamic_settings)
+        self._wait_timeout_default = max(0, float(wait_timeout if wait_timeout is not None else 0))
         self.max_waiters_per_key = max_waiters_per_key
         self.max_waiters = max_waiters
+        self._request_timeout_dynamic = bool(dynamic_settings)
+        self._request_timeout_default = max(0, float(request_timeout if request_timeout is not None else 160))
+
+    # 等待/总时限实时读 settings（后台「运行配置」可动态改，无需重启）；
+    # 读不到或非法时回落注册时的默认值。
+    @property
+    def wait_timeout(self) -> float:
+        if not self._wait_timeout_dynamic:
+            return self._wait_timeout_default
+        try:
+            return max(0.0, float(getattr(settings, "GATEWAY_WAIT_TIMEOUT",
+                                          self._wait_timeout_default)))
+        except (TypeError, ValueError):
+            return self._wait_timeout_default
+
+    @property
+    def request_timeout(self) -> float:
+        if not self._request_timeout_dynamic:
+            return self._request_timeout_default
+        try:
+            return max(0.0, float(getattr(settings, "GATEWAY_REQUEST_TIMEOUT",
+                                          self._request_timeout_default)))
+        except (TypeError, ValueError):
+            return self._request_timeout_default
 
     async def _acquire_once(self, key, rate, concurrent):
         pending = asyncio.create_task(asyncio.to_thread(allow, key, rate, concurrent))
@@ -234,33 +276,66 @@ class GatewayAdmissionMiddleware:
                     await _finish_thread(release, result)
             raise
 
-    async def _admit(self, key, rate, concurrent):
+    async def _admit(self, key, rate, concurrent, start_monitor=None):
+        global _total_waiters
         from admin import request_metrics
         result = await self._acquire_once(key, rate, concurrent)
-        if not isinstance(result, tuple) or not self.wait_timeout:
+        if (not isinstance(result, tuple) or not self.wait_timeout
+                or getattr(result, 'reason', '') == 'requests_per_minute'):
             return result
         with _lock:
             if (_waiters.get(key, 0) >= self.max_waiters_per_key or
-                    sum(_waiters.values()) >= self.max_waiters):
+                    _total_waiters >= self.max_waiters):
                 return result
             _waiters[key] = _waiters.get(key, 0) + 1
+            _total_waiters += 1
         started = time.monotonic()
         deadline = started + self.wait_timeout
+        signal = (asyncio.get_running_loop(), asyncio.Event())
+        with _lock:
+            _signals.setdefault(key, []).append(signal)
         try:
+            if start_monitor is not None:
+                start_monitor()
             while isinstance(result, tuple):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return result
                 reason = getattr(result, 'reason', 'concurrent_requests')
+                if reason == 'requests_per_minute':
+                    return result
                 request_metrics.set_phase('gateway_wait_' + reason)
                 delay = result[1] if reason == 'requests_per_minute' else random.uniform(.2, .4)
-                await asyncio.sleep(min(remaining, delay))
+                wake = time.monotonic() + min(remaining, delay)
+                while True:
+                    try:
+                        await asyncio.wait_for(signal[1].wait(), min(.5, max(0, wake - time.monotonic())))
+                    except asyncio.TimeoutError:
+                        pass
+                    notified = signal[1].is_set()
+                    signal[1].clear()
+                    row = await _finish_thread(check_key_current, key)
+                    if row is not None:
+                        global_rate, global_concurrent = _limits()
+                        next_rate = row.rate_per_minute if row.rate_per_minute is not None else global_rate
+                        next_concurrent = row.max_concurrent if row.max_concurrent is not None else global_concurrent
+                        if (rate, concurrent) != (next_rate, next_concurrent):
+                            rate, concurrent = max(0, next_rate), max(0, next_concurrent)
+                            break
+                    if notified or time.monotonic() >= wake:
+                        break
                 result = await self._acquire_once(key, rate, concurrent)
             request_metrics.set_phase('gateway_admission')
             return result
         finally:
             request_metrics.add_stage('gateway_queue_wait', (time.monotonic() - started) * 1000)
             with _lock:
+                signals = _signals.get(key, [])
+                if signal in signals:
+                    signals.remove(signal)
+                if not signals:
+                    _signals.pop(key, None)
+                _total_waiters = max(0, _total_waiters - 1)
                 count = _waiters.get(key, 1) - 1
                 if count:
                     _waiters[key] = count
@@ -268,6 +343,92 @@ class GatewayAdmissionMiddleware:
                     _waiters.pop(key, None)
 
     async def __call__(self, scope, receive, send):
+        if (scope.get('type') != 'http' or not scope.get('path', '').startswith('/v1/')
+                or scope.get('method', 'GET').upper() != 'POST' or not self.request_timeout):
+            return await self._dispatch(scope, receive, send)
+
+        state = {'timed_out': False, 'started': False, 'complete': False, 'sse': False}
+
+        async def tracked_send(message):
+            if state['timed_out']:
+                return
+            is_final_body = (message['type'] == 'http.response.body'
+                             and not message.get('more_body', False))
+            if message['type'] == 'http.response.start':
+                state['started'] = True
+                state['sse'] = any(name.lower() == b'content-type' and
+                                   b'text/event-stream' in value.lower()
+                                   for name, value in message.get('headers', []))
+            await send(message)
+            if is_final_body:
+                state['complete'] = True
+
+        request = asyncio.create_task(self._dispatch(scope, receive, tracked_send))
+        try:
+            done, _ = await asyncio.wait({request}, timeout=self.request_timeout)
+        except asyncio.CancelledError:
+            request.cancel()
+            await asyncio.wait({request}, timeout=1.0)
+            if request.done() and not request.cancelled():
+                try:
+                    request.exception()
+                except BaseException:
+                    pass
+            raise
+        if request in done:
+            return request.result()
+
+        state['timed_out'] = True
+        from admin import request_metrics
+        request_metrics.mark_request_error('request_timeout')
+        request_metrics.mark_gateway_result(504)
+        record = request_metrics.current.get()
+        if record is not None:
+            record['phase'] = 'request_timeout'
+            record['outcome'] = 'timeout'
+            if state['sse'] and not state['complete']:
+                record['stream_error'] = True
+        request.cancel()
+        done, _ = await asyncio.wait({request}, timeout=1.0)
+        if request in done:
+            if not request.cancelled():
+                try:
+                    request.exception()
+                except BaseException:
+                    pass
+        else:
+            request.add_done_callback(self._consume_task)
+
+        if state['complete']:
+            return
+        try:
+            if not state['started']:
+                from starlette.responses import JSONResponse
+                seconds = f'{self.request_timeout:g}'
+                response = JSONResponse(
+                    {'error': {'message': f'Request exceeded the {seconds}-second gateway limit',
+                               'type': 'timeout', 'code': 'request_timeout'}},
+                    status_code=504, headers={'Retry-After': '1'})
+                await response(scope, receive, send)
+            elif state['sse']:
+                body = ('event: error\ndata: ' + json.dumps(
+                    {'error': {'message': f'Request exceeded the {self.request_timeout:g}-second gateway limit',
+                               'type': 'timeout', 'code': 'request_timeout'}}) + '\n\n').encode()
+                await send({'type': 'http.response.body', 'body': body, 'more_body': False})
+            else:
+                await send({'type': 'http.response.body', 'body': b'', 'more_body': False})
+        except (asyncio.CancelledError, OSError):
+            pass
+
+    @staticmethod
+    def _consume_task(task):
+        if not task.cancelled():
+            try:
+                task.exception()
+            except BaseException:
+                pass
+
+    async def _dispatch(self, scope, receive, send):
         from starlette.responses import JSONResponse
         # Model listing / health probes do not start inference and must not
         # consume the same quota or occupy a long-running generation slot.
@@ -285,6 +446,17 @@ class GatewayAdmissionMiddleware:
             else (None, *_limits())
         from admin import request_metrics
         record = request_metrics.current.get()
+        if key is not None:
+            try:
+                scope['_gateway_key_id'] = int(key)
+            except (TypeError, ValueError):
+                pass
+            identities = scope.get('_client_identities', [])
+            if identities:
+                from admin.client_identity import remember_request
+                from admin.client_ip import request_ip
+                from starlette.requests import Request
+                await _finish_thread(remember_request, identities, request_ip(Request(scope)), int(key))
         if record is not None and key is not None:
             try:
                 record['key_id'] = int(key)
@@ -292,12 +464,57 @@ class GatewayAdmissionMiddleware:
                 pass
         if key is None or not (rate or concurrent):
             return await self.app(scope, receive, send)
+        # One reader owns the ASGI input while waiting. A bounded queue keeps
+        # uploads streaming and replays every frame unchanged to the endpoint.
+        # Start it only after admission actually queues, so unlimited requests
+        # incur neither a queue nor an input-buffering task.
+        frames = asyncio.Queue(maxsize=16)
+        disconnected = asyncio.Event()
+        reader = None
+        admission_task = None
+        async def pump():
+            while True:
+                message = await receive()
+                if message['type'] == 'http.disconnect':
+                    disconnected.set()
+                    if admission_task is not None and not admission_task.done():
+                        admission_task.cancel()
+                    await frames.put(message)
+                    return
+                await frames.put(message)
+        def start_monitor():
+            nonlocal reader
+            reader = asyncio.create_task(pump())
+        async def replay():
+            if disconnected.is_set() and frames.empty():
+                return {'type': 'http.disconnect'}
+            return await frames.get()
+        async def stop_monitor():
+            if reader is not None:
+                reader.cancel()
+                try:
+                    await reader
+                except asyncio.CancelledError:
+                    pass
         try:
-            result = await self._admit(key, rate, concurrent)
+            admission_task = asyncio.create_task(self._admit(key, rate, concurrent, start_monitor))
+            result = await admission_task
+        except asyncio.CancelledError:
+            await stop_monitor()
+            if disconnected.is_set():
+                request_metrics.mark_request_error('client_disconnected')
+                return
+            raise
+        except GatewayRejected as exc:
+            await stop_monitor()
+            request_metrics.mark_gateway_error(exc.status_code, exc.detail)
+            return await JSONResponse(exc.payload(), status_code=exc.status_code)(scope, receive, send)
         except Exception:
+            await stop_monitor()
             return await JSONResponse({'error': {'message': '流量控制服务暂不可用', 'type': 'gateway_unavailable'}},
                                       status_code=503, headers={'Retry-After': '5'})(scope, receive, send)
         if isinstance(result, tuple):
+            await stop_monitor()
             _, retry = result
             reason = getattr(result, 'reason', 'unknown')
             limit = getattr(result, 'limit', None)
@@ -326,8 +543,9 @@ class GatewayAdmissionMiddleware:
                 return
         heartbeat = asyncio.create_task(renew()) if result.client is not None else None
         try:
-            await self.app(scope, receive, send)
+            await self.app(scope, replay if reader is not None else receive, send)
         finally:
+            await stop_monitor()
             if heartbeat:
                 heartbeat.cancel()
                 try:

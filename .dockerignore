@@ -20,3 +20,10 @@ android
 tests
 images
 _zcode_probe
+
+# Documentation allowlist; internal material never enters the build context.
+docs/**
+private
+internal
+research
+evidence

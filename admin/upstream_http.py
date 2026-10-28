@@ -1,14 +1,16 @@
 """Share TLS configuration while keeping each request's cookies isolated."""
 from contextlib import asynccontextmanager
 import asyncio
+import hashlib
 import logging
 import httpcore
 import ssl
 import threading
+from datetime import datetime, timezone
 
 import certifi
 import httpx
-from admin import request_metrics
+from admin import request_metrics, upstream_dispatch
 
 _ssl_context = None
 _ssl_lock = threading.Lock()
@@ -54,21 +56,26 @@ def ssl_context():
 
 
 class _BorrowedTransport(httpx.AsyncBaseTransport):
-    def __init__(self, transport, *, recovery=None, budget=None, limits=None):
+    def __init__(self, transport, *, recovery=None, budget=None, limits=None, scope=None):
         self.transport = transport
         self.recovery = recovery if recovery is not None else {'used': False}
         self.budget = budget
         self.limits = limits
         self.private = []
+        self.scope = scope if scope is not None else {}
 
     async def handle_async_request(self, request):
-        await _prepare_upload(request)
+        captured = await _prepare_upload(request, self.scope)
         try:
             response = await self.transport.handle_async_request(request)
+            if captured is not None:
+                captured['http_status'] = response.status_code
             request_metrics.mark_upstream_response(response.status_code)
             return response
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError,
                 httpx.RemoteProtocolError) as error:
+            if captured is not None:
+                captured['error'] = type(error).__name__
             request_metrics.mark_network_error(error)
             # Only replay an in-memory request before ANY response headers.
             # Read/write timeouts and errors while consuming a response are not
@@ -89,13 +96,21 @@ class _BorrowedTransport(httpx.AsyncBaseTransport):
             self.private.append(fresh)
             # A new pool guarantees the retry cannot reuse the broken socket.
             try:
-                await _prepare_upload(request)
+                captured = await _prepare_upload(request, self.scope)
                 response = await fresh.handle_async_request(request)
+                if captured is not None:
+                    captured['http_status'] = response.status_code
                 request_metrics.mark_upstream_response(response.status_code)
                 return response
             except httpx.TransportError as retry_error:
+                if captured is not None:
+                    captured['error'] = type(retry_error).__name__
                 request_metrics.mark_network_error(retry_error)
                 raise
+        except httpx.TransportError as error:
+            if captured is not None:
+                captured['error'] = type(error).__name__
+            raise
 
     async def aclose(self):
         # The application owns the pool, not an individual request.
@@ -104,10 +119,26 @@ class _BorrowedTransport(httpx.AsyncBaseTransport):
         self.private.clear()
 
 
-async def _prepare_upload(request):
+def select_account(scope, account):
+    # Duplicate pool rows for one UID share the same upstream clock.
+    uid = str(account.uid or '').strip()
+    scope['_upstream_account_key'] = ('uid:' + hashlib.sha256(uid.encode()).hexdigest()
+                                      if uid else 'id:' + str(account.id))
+
+
+async def _prepare_upload(request, scope=None):
+    captured = None
+    try:
+        from admin.request_payload import capture_upstream
+        captured = capture_upstream(request)
+    except Exception:
+        _logger.warning('Optional upstream request capture failed')
+    account_key = (scope or {}).get('_upstream_account_key')
     length = request.headers.get('content-length', '')
     evidence = {'body_bytes': int(length) if length.isdigit() else None,
                 'written_bytes': 0, 'complete': False}
+    if captured is not None:
+        captured['upload'] = evidence
     record = request_metrics.current.get()
     if record is not None:
         uploads = record.setdefault('upstream_uploads', [])
@@ -120,6 +151,17 @@ async def _prepare_upload(request):
     request.extensions['_upload_original_trace'] = existing_trace
     sync_trace = request_metrics.network_trace()
     async def trace(name, info):
+        # Gate at the real HTTP write, after DNS/TCP/TLS/pool acquisition.
+        # Gating before connection setup can bunch different-speed sockets.
+        if name in ('http11.send_request_headers.started', 'http2.send_request_headers.started'):
+            await upstream_dispatch.before_send(scope or {}, account_key)
+            evidence['dispatch_at'] = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+            if captured is not None:
+                captured['dispatch_at'] = evidence['dispatch_at']
+        if name in ('http11.receive_response_headers.complete', 'http2.receive_response_headers.complete') and captured is not None:
+            returned = info.get('return_value')
+            if isinstance(returned, tuple) and len(returned) > 1 and isinstance(returned[1], int):
+                captured['http_status'] = returned[1]
         sync_trace(name, info)
         if name.endswith('.failed') and isinstance(info.get('exception'),
                                                    (httpcore.NetworkError, httpcore.TimeoutException)):
@@ -130,6 +172,7 @@ async def _prepare_upload(request):
         if existing_trace is not None:
             await existing_trace(name, info)
     request.extensions['trace'] = trace
+    return captured
 
 
 async def start(app, limits):
@@ -151,10 +194,6 @@ async def stop(app):
 async def client(request, timeout, limits, *, retry_budget=None):
     # Direct route tests can create a Request without an application in scope.
     app = request.scope.get('app') if hasattr(request, 'scope') else getattr(request, 'app', None)
-    if app is None:
-        async with httpx.AsyncClient(timeout=timeout, limits=limits, event_hooks={'request': [_prepare_upload]}) as connection:
-            yield connection
-        return
     transport = getattr(getattr(app, 'state', None), 'upstream_transport', None)
     kwargs = {'timeout': timeout, 'limits': limits}
     scope = getattr(request, 'scope', {})
@@ -163,7 +202,7 @@ async def client(request, timeout, limits, *, retry_budget=None):
     if owned:
         transport = httpx.AsyncHTTPTransport(limits=limits, verify=ssl_context())
     kwargs['transport'] = _BorrowedTransport(transport, recovery=recovery,
-                                             budget=retry_budget, limits=limits)
+                                             budget=retry_budget, limits=limits, scope=scope)
     try:
         async with httpx.AsyncClient(**kwargs) as connection:
             yield connection

@@ -1,4 +1,6 @@
-# WorkBuddy2API 1.12.0
+# wb2api 1.12.0
+
+> 历史版本公告。项目名称已统一，旧下载链接已移除，安装包旧前缀以 `***` 隐去；内容保留当时的更新与验证记录，不代表本轮重新验证。
 
 本次正式版完善官方模型信息与活动展示，接入快速、均衡、极致三种模式及语音转文字接口，并巩固智能体提示词 11128 兼容处理。
 
@@ -7,16 +9,16 @@
 - **模型配置更贴近官方展示**。模型 ID 提示框显示完整模型介绍、活动说明与生效时段；支持夜间免费、限时免费、独家限免、夜间折扣等官方标签。根据活动有效期、时区和跨夜时段展示实际倍率，过期活动自动退出展示。模型描述与自定义备注分别保存，同步时保留原有启停设置。
 - **修复繁忙程度全部显示未知的问题**。采集时跳过受保护或占用中的账号，继续尝试后续可用账号，恢复上游繁忙状态展示。完善模型表格字段排序和主题配色，刷新健康状态时显示加载与结果提示。
 - **接入三种官方模式**。快速 `fast-model`、均衡 `balanced-model`、极致 `deep-model` 可作为模型 ID 调用，倍率从官方目录同步，支持 Chat Completions、Responses 和 Messages 接入。
-- **新增语音转文字 API**。使用 API Key 调用 `POST /v1/audio/transcriptions`，模型为 `workbuddy-asr`，通过 multipart 上传 `file`，支持 JSON 与纯文本响应。API Keys 页面新增 curl 和 Python SDK 接入示例，连接地址下拉改用系统统一组件，示例随选定地址更新。
-- **语音接口使用已有账号池**。绑定 Key 使用绑定账号，公共 Key 使用所属健康账号池并进行有限轮换；保留 Key 状态、配额准入、限流及并发控制。音频、转写文本和语音请求不写入用量日志、请求审计或最近请求记录。网关上传上限为 25 MiB，详细协议见[语音接口文档](https://github.com/xiaofan6ya/workbuddy2api/blob/master/docs/audio-transcriptions.md)。
+- **新增语音转文字 API**。使用 API Key 调用 `POST /v1/audio/transcriptions`，模型为 `wb-asr`，通过 multipart 上传 `file`，支持 JSON 与纯文本响应。API Keys 页面新增 curl 和 Python SDK 接入示例，连接地址下拉改用系统统一组件，示例随选定地址更新。
+- **语音接口使用已有账号池**。绑定 Key 使用绑定账号，公共 Key 使用所属健康账号池并进行有限轮换；保留 Key 状态、配额准入、限流及并发控制。音频、转写文本和语音请求不写入用量日志、请求审计或最近请求记录。网关上传上限为 25 MiB，详细协议见语音接口文档（原链接已移除）。
 - **巩固 Zcode / DSH 提示词 11128 修复**。全局处理已确认触发拦截的 `you will usually use this for PRs` 固定说明，不依赖 `Main branch` 标签或任何分支名，覆盖后续上下文中的重复内容，保留实际分支与其它 Git 状态。已有 DeepSeek Harness 开场白兼容处理继续生效。
 
 ## 下载与升级
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | `WorkBuddy2API-1.12.0-windows-x64.exe` |
-| Android ARM64（Android 7.0 及以上） | `WorkBuddy2API-1.12.0-android-arm64.apk` |
+| Windows x64 | `***-1.12.0-windows-x64.exe` |
+| Android ARM64（Android 7.0 及以上） | `***-1.12.0-android-arm64.apk` |
 
 Windows 使用新版 EXE 更新；Android 使用同签名 APK 覆盖安装，保留账号与配置。两端均提供 `.sha256` 校验文件，旧版本可通过客户端更新检查发现本次正式版。
 

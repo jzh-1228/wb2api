@@ -237,7 +237,8 @@ def _resolve_host_port(args) -> tuple[str, int]:
 def _build_admin_cmd(args) -> tuple[list[str], int, str]:
     host, port = _resolve_host_port(args)
     cmd = [PY, "-m", "uvicorn", "admin.server:app",
-           "--host", host, "--port", str(port), "--log-level", "info"]
+           "--host", host, "--port", str(port), "--log-level", "info",
+           "--no-proxy-headers"]
     return cmd, port, host
 
 
@@ -768,6 +769,11 @@ def main() -> None:
     _logfiles: list = []
     stop = threading.Event()
 
+    # 重生所需信息：tag -> (cmd, port, host, logfile)，由 _launch 登记
+    _launch_specs: dict = {}
+    _started_at: dict = {}
+    _crashes: dict = {}
+
     def _launch(tag: str, cmd: list[str], port: int, host: str, logfile: Path) -> None:
         _log(f"[main] 启动 {tag} (http://{host}:{port}) : {' '.join(cmd)}")
         # 交互式终端才用「管道 + 转发线程」以便边跑边看；
@@ -802,6 +808,8 @@ def main() -> None:
                 text=True, bufsize=1, env=os.environ.copy(),
             )
         procs.append((tag, p))
+        _launch_specs[tag] = (cmd, port, host, logfile)
+        _started_at[tag] = time.monotonic()
 
     _launch("admin", *_build_admin_cmd(args), LOGS / "admin.log")
 
@@ -834,12 +842,30 @@ def main() -> None:
     while not stop.is_set():
         for tag, p in list(procs):
             rc = p.poll()
-            if rc is not None and not stop.is_set():
-                _log(f"[main] ❌ {tag} 已退出 (code={rc})，关闭服务…")
-                stop.set()
-                _kill_children(procs)
-                _remove_pidfile()
-                sys.exit(rc if rc != 0 else 1)
+            if rc is None or stop.is_set():
+                continue
+            ran = time.monotonic() - _started_at.get(tag, time.monotonic())
+            # 子进程退出后自动重生（web 端「重启服务」依赖这个：退出 uvicorn
+            # → 这里重新拉起。exe/apk 没有 systemd，之前退出 = 整个服务死）。
+            # 崩溃退避：存活 <60s 视为崩溃，连续崩溃指数退避 1→60s；
+            # 稳定运行满 5 分钟计数清零 —— 真 bug 死循环不会刷爆 CPU/日志。
+            if ran < 60:
+                _crashes[tag] = _crashes.get(tag, 0) + 1
+            else:
+                _crashes[tag] = 0
+            n = _crashes.get(tag, 1)
+            backoff = min(60.0, 2.0 ** (n - 1)) if n > 1 else 1.0
+            _log(f"[main] ⚠️ {tag} 已退出 (code={rc}, 存活 {ran:.0f}s)"
+                 f"{'，判定为崩溃' if ran < 60 else ''}，{backoff:.0f}s 后自动重启（第 {n} 次）…")
+            procs[:] = [x for x in procs if x[0] != tag]
+            deadline = time.monotonic() + backoff
+            while time.monotonic() < deadline and not stop.is_set():
+                time.sleep(0.2)
+            if stop.is_set():
+                break
+            spec = _launch_specs.get(tag)
+            if spec:
+                _launch(tag, *spec)
         time.sleep(0.5)
 
     _kill_children(procs)

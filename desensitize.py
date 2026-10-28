@@ -30,6 +30,8 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from repository_instructions import extract_repository_instructions
+
 # 零宽空格：插入到关键词内部，打断后端的关键词匹配，但模型/人眼读起来无差别。
 _ZWSP = "\u200b"
 
@@ -512,17 +514,35 @@ def desensitize_messages(messages: Iterable[dict],
         nm = dict(m)  # 浅拷贝，不污染调用方
         if should_desensitize:
             content = m.get("content")
+            preserved: list[str] = []
+            block_instructions: dict[int, list[str]] = {}
+            if isinstance(content, str):
+                content, preserved = extract_repository_instructions(content)
+            elif isinstance(content, list):
+                cleaned = []
+                for index, block in enumerate(content):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text, instructions = extract_repository_instructions(block.get("text", ""))
+                        block_instructions[index] = instructions
+                        preserved.extend(instructions)
+                        cleaned.append(dict(block, text=text))
+                    else:
+                        cleaned.append(block)
+                content = cleaned
             compacted = _compact_harness_message(role, content) if compact_harness else None
             if compacted is not None:
-                nm["content"] = desensitize_text(compacted)
+                nm["content"] = '\n\n'.join([desensitize_text(compacted), *preserved])
             elif isinstance(content, str):
-                nm["content"] = desensitize_text(_prune_runtime_fragments(role, content))
+                nm["content"] = '\n\n'.join([desensitize_text(_prune_runtime_fragments(role, content)), *preserved])
             elif isinstance(content, list):
                 new_blocks = []
-                for blk in content:
+                for index, blk in enumerate(content):
                     if isinstance(blk, dict) and blk.get("type") == "text":
                         nb = dict(blk)
-                        nb["text"] = desensitize_text(_prune_runtime_fragments(role, blk.get("text", "")))
+                        nb["text"] = '\n\n'.join([
+                            desensitize_text(_prune_runtime_fragments(role, blk.get("text", ""))),
+                            *block_instructions.get(index, []),
+                        ])
                         new_blocks.append(nb)
                     else:
                         new_blocks.append(blk)

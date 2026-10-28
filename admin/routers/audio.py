@@ -17,7 +17,7 @@ from admin.config import settings
 from admin.db import get_db
 from admin.models import Account
 from admin.pool import POOL
-from admin.security import get_key_row, check_quota
+from admin.security import get_key_row, check_quota, GatewayRejected
 from admin.request_scheduling import pool_budget, release_connection
 from admin.routers import proxy
 
@@ -82,6 +82,7 @@ async def transcriptions(request: Request, db: Session = Depends(get_db),
         check_quota(key)
     except HTTPException as exc:
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    request.scope['_gateway_key_id'] = key.id
     if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
         return error(400, "请使用 multipart/form-data 上传 file、model", "invalid_multipart")
     length = request.headers.get("content-length", "")
@@ -147,8 +148,10 @@ async def _transcribe(request, db, key, audio, filename, mime, response_format):
             sess = await proxy._account_session_async(db, acc)
             if sess is None:
                 continue
-            extra = await proxy._blocking_call(proxy.cprofile.risk_headers)
-            headers = proxy._headers_for_attempt(sess, extra)
+            upstream_http.select_account(request.scope, acc)
+            # Reuse only headers produced by the account session. This route
+            # must not synthesize client-profile/device-risk headers.
+            headers = proxy._headers_for_attempt(sess, {})
             headers = {k: v for k, v in headers.items() if k.lower() not in ("content-type", "content-length")}
             await proxy._blocking_call(release_connection, db)
             async with upstream_http.client(request, httpx.Timeout(30, connect=10), backend.HTTP_LIMITS, retry_budget=budget) as client:
@@ -177,6 +180,9 @@ async def _transcribe(request, db, key, audio, filename, mime, response_format):
                 last_status = 429 if kind in {"hard_credit", "soft_rate", "model_rate"} else 502
             else:
                 return error(last_status, "语音识别失败，请检查音频格式后重试", "transcription_failed")
+        except GatewayRejected as exc:
+            await proxy._record_gateway_rejection(exc, key.id, request)
+            return JSONResponse(status_code=exc.status_code, content=exc.payload())
         except httpx.TransportError:
             last_status = 502
         finally:

@@ -40,18 +40,18 @@ def main():
       ffi=FixedFileInfo(filevers={parts + (0,)}, prodvers={parts + (0,)},
           mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
       kids=[StringFileInfo([StringTable('040904B0', [
-        StringStruct('CompanyName', 'WorkBuddy2API'),
-        StringStruct('FileDescription', 'WorkBuddy2API Desktop'),
+        StringStruct('CompanyName', 'wb2api'),
+        StringStruct('FileDescription', 'wb2api Desktop'),
         StringStruct('FileVersion', '{version}'),
-        StringStruct('ProductName', 'WorkBuddy2API'),
+        StringStruct('ProductName', 'wb2api'),
         StringStruct('ProductVersion', '{version}')])]),
         VarFileInfo([VarStruct('Translation', [1033, 1200])])])'''
     (ROOT / "build/version-resource.txt").write_text(resource, encoding="utf-8")
     env = dict(os.environ, PYTHONUTF8="1")
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
                     "--distpath", str(destination),
-                    str(ROOT / "desktop/WorkBuddy2API.spec")], cwd=ROOT, env=env, check=True)
-    executable = destination / f"WorkBuddy2API-{version}-windows-x64.exe"
+                    str(ROOT / "desktop/wb2api.spec")], cwd=ROOT, env=env, check=True)
+    executable = destination / f"wb2api-{version}-windows-x64.exe"
     digest = hashlib.sha256(executable.read_bytes()).hexdigest()
     executable.with_suffix(".exe.sha256").write_text(f"{digest}  {executable.name}\n", encoding="ascii")
     print(f"Built {executable} ({executable.stat().st_size / 1048576:.1f} MB)")

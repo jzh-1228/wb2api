@@ -109,7 +109,7 @@ public class LocalApiService extends Service {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), flags);
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, LocalApiService.class).setAction("stop"), flags);
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-        return builder.setSmallIcon(R.drawable.notification_icon).setContentTitle("WorkBuddy2API")
+        return builder.setSmallIcon(R.drawable.notification_icon).setContentTitle("wb2api")
             .setContentText(text).setContentIntent(open).setOngoing(true)
             .addAction(new Notification.Action.Builder(null, "停止服务", stop).build()).build();
     }

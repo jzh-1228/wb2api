@@ -66,44 +66,22 @@ def _stream_timeout() -> httpx.Timeout:
 
 
 def _client_ip_headers(request: Request, purpose: str = "conversation") -> dict:
-    """提取真实客户端 IP 与用途/产品头，透传给上游，避免请求用量里 client/agentPurpose 为空。
+    """Return only correlation headers explicitly supplied by the caller.
 
-    真实 WorkBuddy 桌面端：
-      - X-Agent-Purpose: "conversation" 用于普通对话
-      - X-IDE-Name / X-IDE-Type: "WorkBuddy"（产品名，来自 clientInfoProvider 的
-        platform / ideName，桌面端常量 WORKBUDDY_PLATFORM = "WorkBuddy"）
-      - X-Product: **不是产品名，是部署形态**。官方全局
-        ProductEndpointHttpInterceptor 里写的是
-            headers["X-Product"] ||= configuration?.deploymentType ?? "SaaS"
-        所以这里默认应当是 "SaaS"（= product.json 的 deploymentType），
-        而不是 "WorkBuddy"。可用 ADMIN_UPSTREAM_PRODUCT 单独覆盖。
+    The gateway must not invent a desktop identity, SDK fingerprint, device
+    token, client IP, or tracing tree.  A caller that already has a real
+    conversation/request identifier may pass it through; otherwise the
+    upstream request simply omits these optional headers.
     """
-    ip = None
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        ip = xff.split(",")[0].strip()
-    else:
-        real = request.headers.get("X-Real-IP")
-        if real:
-            ip = real.strip()
-        elif request.client:
-            ip = request.client.host
-    client_name = os.environ.get("ADMIN_UPSTREAM_CLIENT_NAME", "WorkBuddy").strip() or "WorkBuddy"
-    product = (os.environ.get("ADMIN_UPSTREAM_PRODUCT", "SaaS").strip() or "SaaS")
-    h = {
-        "X-Agent-Purpose": purpose or "conversation",
-        "X-IDE-Name": client_name,
-        "X-IDE-Type": client_name,
-        "X-Product": product,
-    }
-    if ip:
-        h["X-Forwarded-For"] = ip
-        h["X-Real-IP"] = ip
-        h["X-Client-IP"] = ip
-        custom = os.environ.get("ADMIN_UPSTREAM_CLIENT_HEADER", "").strip()
-        if custom:
-            h[custom] = ip
-    return h
+    del purpose
+    allowed = (
+        "X-Conversation-ID", "X-Conversation-Request-ID",
+        "X-Conversation-Message-ID", "X-Request-ID",
+        "traceparent", "tracestate", "b3", "X-B3-TraceId",
+        "X-B3-SpanId", "X-B3-Sampled", "X-B3-ParentSpanId",
+    )
+    return {name: value for name in allowed
+            if (value := request.headers.get(name))}
 
 try:
     from desensitize import desensitize_body
@@ -129,9 +107,8 @@ from anthropic_adapter import (
 
 BACKEND = "https://copilot.tencent.com"
 DEFAULT_DOMAIN = "www.codebuddy.cn"
-#: 出站 User-Agent：**必须**伪装成官方客户端。
-#: 原来这里是 `codebuddy2openai/2.0` —— 一个自报家门的网关标识，上游「使用端」
-#: 列会直接显示它，等于对风控举手。（官方无任何 UA 随机化，故这里保持确定性。）
+#: 出站 User-Agent：客户端档案中有明确来源时才使用。
+#: 不生成随机 UA，也不把服务器的运行时信息冒充成桌面客户端。
 #: 形状对齐官方桌面端三段式：`WorkBuddy/<客户端版本> WorkBuddy/<版本> CLI/<CLI版本>`。
 #:
 #: **取值走「客户端参数档案」**（`admin/client_profile.py`），优先级：
@@ -229,17 +206,14 @@ def find_auth_file() -> Path | None:
 # ---------------------------------------------------------------------------
 
 def _get_turing_device_token() -> str | None:
-    """延迟取本机设备风控 Token；失败返回 None（不影响主流程）。
+    """Compatibility hook retained for callers that patch the old helper.
 
-    放在模块级做懒加载：converter.py 既可作为 admin 的子模块被挂载，也可独立
-    `python converter.py` 运行。admin 包不可用时（极少数情况）直接降级为不带该头。
+    The gateway deliberately does not synthesize or attach a device-risk token.
+    A real desktop process may obtain one in its own request pipeline; the
+    server-side converter has no truthful token source, so this always returns
+    ``None`` and is not used to build outbound model headers.
     """
-    try:
-        from admin.turing_token import get_device_token
-        return get_device_token()
-    except Exception:
-        return None
-
+    return None
 
 class CredentialError(RuntimeError):
     """Invalid local credentials; fixed messages contain no token values."""
@@ -377,38 +351,111 @@ class CredentialManager:
     def _build_headers_from(self, auth: dict, account: dict) -> dict:
         self._validate_auth({'auth': auth})
         domain = auth.get("domain") or DEFAULT_DOMAIN
+        token = auth.get('accessToken', '')
         h = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {auth.get('accessToken','')}",
+            "Authorization": f"Bearer {token}",
             "X-User-Id": account.get("uid", ""),
-            "X-Enterprise-Id": account.get("enterpriseId", ""),
-            "X-Tenant-Id": account.get("enterpriseId", ""),
             "X-Domain": domain,
             "User-Agent": client_user_agent(),
         }
-        # 风控设备头：与桌面端 Turing Shield 一致，缺失会被上游识别为异常客户端。
-        # 取不到（桌面端未安装 / SDK 不支持）时优雅降级为不带该头，不影响主流程。
-        tok = _get_turing_device_token()
-        if tok:
-            h["X-Device-Token"] = tok
+        # 企业账号才发归属头：官方只在 enterpriseId 非空时设置它们，
+        # 个人账号请求里根本没有这两个头（发空值反而是特征）。
+        enterprise = str(account.get("enterpriseId") or "").strip()
+        if enterprise:
+            h["X-Enterprise-Id"] = enterprise
+            h["X-Tenant-Id"] = enterprise
         return h
 
     def get_headers(self, extra: dict | None = None) -> dict:
         """返回带最新 token 的后端请求 header；必要时先刷新。
 
-        extra: 调用方（如 proxy.py）可注入的风控/审计头，例如真实客户端 IP、
-               用途标识 X-Agent-Purpose 等。这些头会被 merge 到基础鉴权头之后，
-               确保上游请求用量能正确显示 client 与 agentPurpose，降低被风控概率。
+        extra: caller-provided headers that are known to belong to the
+               request.  No client or device fingerprint is synthesized here.
         """
         with self._lock:
             if self._is_expired():
                 self._refresh()
-            s = self._session()
-            h = self._build_headers_from(s.get("auth") or {}, s.get("account") or {})
-            if extra:
-                h.update(extra)
-            return h
+            return self._headers_from_current(extra)
+
+    def _headers_from_current(self, extra: dict | None = None) -> dict:
+        """Build headers from the cached credential without an implicit refresh.
+
+        This is deliberately separate from :meth:`get_headers`: after a request
+        receives 401, the bounded retry has already called ``force_refresh``.
+        Calling ``get_headers`` again there could refresh a second time when an
+        upstream response omits ``expiresAt`` and the access token is opaque.
+        The caller must hold ``self._lock``.
+        """
+        s = self._session()
+        h = self._build_headers_from(s.get("auth") or {}, s.get("account") or {})
+        if extra:
+            h.update(extra)
+        return h
+
+    def _headers_without_refresh(self, extra: dict | None = None) -> dict:
+        """Return current headers without checking the expiry timestamp."""
+        with self._lock:
+            return self._headers_from_current(extra)
+
+    def force_refresh(self) -> None:
+        """Force one refresh of the stored access token.
+
+        A token can be revoked or replaced before its local ``expiresAt``
+        deadline.  Callers that receive an upstream 401 use this once before
+        deciding that the credential is unusable.  The same lock as normal
+        header construction prevents concurrent requests from racing a token
+        rotation.
+        """
+        with self._lock:
+            self._refresh()
+
+    def _refresh_rejected_token(self, request_headers: dict) -> None:
+        """Refresh only if the rejected request still uses the current token.
+
+        Concurrent calls can all receive a 401 for the same old token.  Once
+        one call rotates it, later calls should reuse that token instead of
+        racing a second refresh with an already-rotated refresh token.
+        """
+        authorization = str((request_headers or {}).get("Authorization") or "")
+        rejected = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        with self._lock:
+            current = str(((self._session().get("auth") or {}).get("accessToken")) or "")
+            if rejected and current and current != rejected:
+                return
+            self._refresh()
+
+    def _request_with_refresh(self, client, method: str, url: str,
+                              headers: dict, *, extra: dict | None = None,
+                              json_body: dict | list | None = None,
+                              request_options: dict | None = None):
+        """Send one request and retry it once after a 401 token refresh.
+
+        A 401 is an upstream authentication signal, not a reason to loop.  The
+        refresh endpoint is called at most once, and a failed refresh leaves the
+        original response untouched so callers can classify it accurately.
+        ``extra`` contains non-secret request headers that must be reapplied to
+        the retry (for example the official client profile headers).
+        """
+        options = request_options or {}
+
+        def send(request_headers):
+            if method.upper() == "GET":
+                return client.get(url, headers=request_headers, **options)
+            return client.post(url, headers=request_headers,
+                               json=json_body if json_body is not None else {},
+                               **options)
+
+        response = send(headers)
+        if response.status_code != 401:
+            return response
+        try:
+            self._refresh_rejected_token(headers)
+            retry_headers = self._headers_without_refresh(extra)
+        except Exception:
+            return response
+        return send(retry_headers)
 
     def summary(self) -> dict:
         s = self._session()
@@ -443,22 +490,22 @@ class CredentialManager:
                 headers = self.get_headers()
         else:
             headers = self.get_headers()
-        if path == '/v3/config':
-            from admin.client_profile import risk_headers
-            headers.update(risk_headers())
+        extra_headers = {}
+
         try:
             with httpx.Client(timeout=timeout, limits=_HTTP_LIMITS, **client_options) as c:
-                if method.upper() == "GET":
-                    r = c.get(url, headers=headers, **request_options)
-                else:
-                    r = c.post(url, headers=headers, json=json_body or {}, **request_options)
+                r = self._request_with_refresh(
+                    c, method, url, headers, extra=extra_headers,
+                    json_body=json_body, request_options=request_options)
         except Exception as e:
             raise RuntimeError(f"后端请求网络失败 {method} {path}: {e}")
+        if r.status_code != 200:
+            raise UpstreamError(f"后端请求失败 {method} {path}", r.status_code, r.text)
         try:
             data = r.json()
         except Exception as e:
             raise UpstreamError(f"后端返回非 JSON {method} {path}", r.status_code, r.text) from e
-        if r.status_code != 200 or data.get("code") != 0:
+        if not isinstance(data, dict) or data.get("code") != 0:
             raise UpstreamError(f"后端请求失败 {method} {path}", r.status_code, r.text)
         return data
 
@@ -472,10 +519,8 @@ class CredentialManager:
         url = f"{BACKEND}{path}"
         try:
             with httpx.Client(timeout=15, limits=_HTTP_LIMITS) as c:
-                if method.upper() == "GET":
-                    r = c.get(url, headers=headers)
-                else:
-                    r = c.post(url, headers=headers, json=json_body or {})
+                r = self._request_with_refresh(
+                    c, method, url, headers, json_body=json_body)
         except Exception as e:
             raise RuntimeError(f"后端请求网络失败 {method} {path}: {e}")
         try:
@@ -563,7 +608,8 @@ class CredentialManager:
         url = f"{BACKEND}/v2/images/generations"
         try:
             with httpx.Client(timeout=timeout, limits=_HTTP_LIMITS) as c:
-                r = c.post(url, headers=headers, json=body)
+                r = self._request_with_refresh(
+                    c, "POST", url, headers, json_body=body)
         except Exception as e:
             raise RuntimeError(f"生图请求网络失败：{e}")
         try:
@@ -859,6 +905,37 @@ def get_balance(authorization: Optional[str] = Header(default=None),
         return {"object": "balance", "source": "backend", **_cached_balance(cred)}
     except Exception as e:
         raise HTTPException(status_code=502, detail={"error": {"message": f"获取额度失败：{e}", "type": "upstream_error"}})
+
+
+@app.get("/user/balance")
+@app.get("/v1/user/balance")
+def get_user_balance_deepseek(authorization: Optional[str] = Header(default=None),
+                              x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
+    """DeepSeek 官方余额接口（`GET /user/balance`）的兼容实现。
+
+    返回 `is_available` + `balance_infos[]`（金额为字符串），与
+    `https://api.deepseek.com/user/balance` 同形；`/v1/user/balance` 是给
+    base_url 已带 /v1 的客户端的等价别名。数据与 `/v1/balance` 同源（本机
+    桌面登录账号的积分快照），上游没有赠金/充值之分，granted 恒为 "0.00"，
+    currency 如实标注为 CREDITS（积分），不冒充 CNY。
+    """
+    _check_auth(authorization, x_api_key)
+    cred = _cred()
+    try:
+        b = _cached_balance(cred)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"error": {"message": f"获取额度失败：{e}", "type": "upstream_error"}})
+    remain = float(b.get("remain") or 0)
+    total = f"{remain:.2f}"
+    return {
+        "is_available": remain > 0,
+        "balance_infos": [{
+            "currency": "CREDITS",
+            "total_balance": total,
+            "granted_balance": "0.00",
+            "topped_up_balance": total,
+        }],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1714,6 +1791,7 @@ def main():
     sys.stderr.write(f"\n✅ 监听 http://{args.host}:{args.port}（直连后端，原生 function calling）\n")
     sys.stderr.write("   GET  /v1/models\n")
     sys.stderr.write("   GET  /v1/balance            (当前账号可用积分额度)\n")
+    sys.stderr.write("   GET  /user/balance          (DeepSeek 兼容余额，/v1/user/balance 同义)\n")
     sys.stderr.write("   POST /v1/chat/completions   (原生 tools/tool_calls，支持流式)\n")
     sys.stderr.write("   POST /v1/responses          (Responses API，Codex CLI 兼容)\n")
     sys.stderr.write("   POST /v1/messages           (Anthropic API，Claude Code / CC Switch 兼容)\n")

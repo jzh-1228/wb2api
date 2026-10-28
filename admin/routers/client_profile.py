@@ -53,17 +53,23 @@ def _payload(db: Session) -> dict:
     """组装给前端的完整视图。"""
     eff = cprofile.effective(db)
     sav = cprofile.saved()
-    det = cprofile.snapshot_live()
+    detail = cprofile.snapshot_detail()
+    det = detail.get("values") or {}
     return {
         "effective": eff,
         "saved": sav,
         "detected": det,
+        # 每个探测键的来源：安装包（product.json 等）或本机系统（OS/硬件/时区）
+        "detected_origins": detail.get("origins") or {},
+        "detected_package": detail.get("package") or {},
+        "detected_system": detail.get("system") or {},
         "sources": cprofile.sources(db),
         "source": cprofile.source(),
         "defaults": cprofile.DEFAULTS,
         # 有探测值 = 这台机器上确实装了客户端（线上通常为空）
         "has_client": bool(det),
         "diff_saved_vs_effective": cprofile.diff(sav, eff),
+        "runtime_diagnostics": cprofile.runtime_diagnostics(),
     }
 
 
@@ -76,13 +82,19 @@ def get_profile(_: bool = Depends(require_admin), db: Session = Depends(get_db))
 def detect(_: bool = Depends(require_admin)):
     """现场探测本机客户端（只读，不写库）。
 
+    返回安装包 + 本机系统两类只读值，并按 origin 标明每个值的出处；
     线上服务器上探测结果通常为空 —— 这正是需要「本地探测后同步过去」的原因。
     """
-    det = cprofile.snapshot_live()
+    detail = cprofile.snapshot_detail()
+    det = detail.get("values") or {}
     return {
         "ok": True,
         "detected": det,
+        "detected_origins": detail.get("origins") or {},
+        "detected_package": detail.get("package") or {},
+        "detected_system": detail.get("system") or {},
         "has_client": bool(det),
+        "runtime_diagnostics": cprofile.runtime_diagnostics(),
         "message": ("探测到本机客户端" if det else
                     "未探测到本机 WorkBuddy 桌面端（线上实例属正常；"
                     "请在装了客户端的机器上探测后同步过来）"),

@@ -9,8 +9,65 @@ import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MODE_IDS = ("fast-model", "balanced-model", "deep-model")
-METADATA_FIELDS = ("name", "descriptionZh", "descriptionEn", "description", "credits",
-                   "tags", "promotions", "tier")
+METADATA_FIELDS = (
+    "name", "descriptionZh", "descriptionEn", "description", "credits",
+    "tags", "promotions", "tier", "vendor", "maxInputTokens",
+    "maxOutputTokens", "maxAllowedSize", "reasoning", "supportsImages",
+    "supportsReasoning", "supportsToolCall", "onlyReasoning",
+    "canDisableThinking", "temperature", "top_p", "top_k",
+    "repetition_penalty", "iconUrl",
+)
+
+
+def client_capabilities(model):
+    """Expose catalog limits and reasoning options in client-friendly fields."""
+    reasoning = model.get("reasoning")
+    efforts = []
+    default_effort = ""
+    if isinstance(reasoning, dict):
+        raw_efforts = reasoning.get("supportedEfforts")
+        if isinstance(raw_efforts, list):
+            efforts = list(dict.fromkeys(
+                str(value).strip() for value in raw_efforts if str(value).strip()
+            ))
+        if not efforts and reasoning.get("effort"):
+            efforts = [str(reasoning["effort"]).strip()]
+        default_effort = str(reasoning.get("defaultEffort") or "").strip()
+    return {
+        "context_length": model.get("maxInputTokens"),
+        "context_window": model.get("maxInputTokens"),
+        "max_input_tokens": model.get("maxInputTokens"),
+        "max_output_tokens": model.get("maxOutputTokens"),
+        "max_allowed_size": model.get("maxAllowedSize"),
+        "supports_images": bool(model.get("supportsImages")),
+        "supports_reasoning": bool(model.get("supportsReasoning")),
+        "supports_tool_call": bool(model.get("supportsToolCall")),
+        "only_reasoning": bool(model.get("onlyReasoning")),
+        "can_disable_thinking": model.get("canDisableThinking"),
+        "reasoning_supported_efforts": efforts,
+        "reasoning_default_effort": default_effort if default_effort in efforts else "",
+    }
+
+
+def is_image_model(model_id):
+    """Known image-only IDs must not enter automatic chat fallback."""
+    return str(model_id or '').lower().startswith('hunyuan-image-')
+
+
+def model_type(model):
+    """Classify output modality; vision inputs still belong to text models."""
+    meta = model.get('metadata') if isinstance(model.get('metadata'), dict) else model
+    tags = meta.get('tags') or []
+    tags = {tag.lower() for tag in tags if isinstance(tag, str)} if isinstance(tags, list) else set()
+    return 'image' if (is_image_model(model.get('model_id') or model.get('id'))
+        or tags & {'text-to-image', 'image-to-image'} or meta.get('kind') == 'image') else 'text'
+
+
+def type_tags(model):
+    meta = model.get('metadata') if isinstance(model.get('metadata'), dict) else model
+    tags = meta.get('tags') or []
+    tags = [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+    return list(dict.fromkeys([*tags, model_type(model)]))
 
 
 def merge_product_catalog(payload, product):

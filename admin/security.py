@@ -91,3 +91,34 @@ def check_quota(key: ApiKey) -> None:
             status_code=402,
             detail={"error": {"message": "当前 API Key 的额度已用完，请调整此 Key 的限额或联系管理员", "type": "quota_exceeded", "code": "key_quota_exceeded", "source": "gateway"}},
         )
+
+
+class GatewayRejected(Exception):
+    """A local rejection, never an upstream account failure or retry signal."""
+    def __init__(self, status_code, detail):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail.get('error', {}).get('message', '网关拒绝请求'))
+
+    def payload(self):
+        return {'error': {**self.detail['error'], 'source': 'gateway', 'http_status': self.status_code}}
+
+
+def recheck_key(db, key_id):
+    key = db.get(ApiKey, int(key_id), populate_existing=True)
+    if key is None:
+        raise GatewayRejected(401, {'error': {'message': 'API Key 已删除或无效',
+                                            'type': 'invalid_api_key', 'source': 'gateway'}})
+    try:
+        check_quota(key)
+    except HTTPException as exc:
+        raise GatewayRejected(exc.status_code, {'error': {**exc.detail['error'], 'source': 'gateway'}}) from None
+    return key
+
+
+def check_key_current(key_id):
+    # Use a short, fresh transaction even when the caller is waiting in a long
+    # request (MySQL repeatable-read must not retain an earlier key status).
+    from admin.db import SessionLocal as factory
+    with factory() as db:
+        return recheck_key(db, key_id)
